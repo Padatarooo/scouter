@@ -10,14 +10,13 @@
   html,body{ margin:0; height:100%; background:var(--bg); color:var(--lens); font-family:"Hiragino Sans","Noto Sans JP",sans-serif; }
   #stage{ position:relative; width:100%; height:100%; overflow:hidden; }
   video,canvas{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  video{ filter:grayscale(1) sepia(1) hue-rotate(80deg) saturate(2.2) brightness(.8) contrast(1.1); }
   #hud{ position:absolute; left:0; right:0; top:0; padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 0;
         display:flex; justify-content:space-between; font-size:14px; text-shadow:0 0 8px #000; }
   #list{ position:absolute; left:16px; right:16px; top:calc(env(safe-area-inset-top,0px) + 44px); text-shadow:0 0 8px #000; }
   .row{ display:flex; justify-content:space-between; align-items:baseline; padding:6px 10px; margin-bottom:6px;
         background:rgba(3,20,12,.6); border-left:3px solid var(--lens); font-size:17px; }
   .row b{ font-size:30px; font-variant-numeric:tabular-nums; }
-  #toast{ position:absolute; left:0; right:0; bottom:calc(env(safe-area-inset-bottom,0px) + 84px); text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; }
+  #toast{ position:absolute; left:0; right:0; top:40%; padding:0 24px; font-size:18px; text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; }
   #bar{ position:absolute; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; justify-content:center;
         padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
   button{ font:inherit; font-size:16px; color:var(--lens); background:rgba(3,20,12,.75); border:1.5px solid var(--lens);
@@ -87,12 +86,13 @@ const bon = () => beep(90, 0.5);
 function identify(desc) {
   let best = null, bd = 9;
   for (const p of db.people) { const d = faceapi.euclideanDistance(desc, p.desc); if (d < bd) { bd = d; best = p; } }
-  return bd < TH ? best : null;
+  return { p: bd < TH ? best : null, d: bd, near: best };
 }
 
 async function openCamera() {
   if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
   video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: false });
+  video.style.transform = facing === "user" ? "scaleX(-1)" : "";
   await video.play();
 }
 
@@ -102,13 +102,14 @@ function draw() {
   ctx.clearRect(0, 0, cw, ch);
   ctx.strokeStyle = ctx.fillStyle = "#7dffb0"; ctx.lineWidth = 2; ctx.shadowColor = "#7dffb0"; ctx.shadowBlur = 8; ctx.font = "14px sans-serif";
   for (const c of current) {
-    const b = c.box, x = b.x * s + ox, y = b.y * s + oy, w = b.width * s, h = b.height * s, k = Math.min(w, h) * 0.22;
+    const b = c.box, w = b.width * s, h = b.height * s, y = b.y * s + oy, k = Math.min(w, h) * 0.22;
+    let x = b.x * s + ox; if (facing === "user") x = cw - x - w;   // 内カメラは鏡像にそろえる
     ctx.beginPath();
     [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, dx, dy]) => {
       ctx.moveTo(px + dx * k, py); ctx.lineTo(px, py); ctx.lineTo(px, py + dy * k);
     });
     ctx.stroke();
-    ctx.fillText(c.person ? c.person.name : "未登録", x, Math.max(14, y - 6));
+    ctx.fillText((c.person ? c.person.name : "未登録") + (c.near ? "  d=" + c.d.toFixed(2) : ""), x, Math.max(14, y - 6));
   }
 }
 
@@ -118,21 +119,24 @@ function renderList() {   // 戦闘力は画面の決まった位置に表示(�
   if (html !== lastHtml) { listEl.innerHTML = html; lastHtml = html; }
 }
 
-async function loop() {
-  if (!running) return;
+async function step() {
   const t0 = performance.now();
   const res = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
     .withFaceLandmarks().withFaceDescriptors();
   current = res.map(r => {
-    const p = identify(r.descriptor);
+    const m = identify(r.descriptor), p = m.p;
     const seed = p ? "p" + p.id : "u" + Array.from(r.descriptor).slice(0, 8).map(v => Math.round(v * 5)).join(",");
-    return { box: r.detection.box, desc: r.descriptor, person: p, power: power(seed) };
+    return { box: r.detection.box, desc: r.descriptor, person: p, power: power(seed), d: m.d, near: m.near };
   }).sort((a, b) => b.box.width - a.box.width);
   draw(); renderList();
   document.getElementById("count").textContent = "検出: " + current.length + "人";
   document.getElementById("fps").textContent = Math.round(1000 / (performance.now() - t0)) + " fps";
   if (lastCount === 0 && current.length > 0) { pipipi(); if (current.some(c => c.power > 9000)) setTimeout(bon, 450); }
   lastCount = current.length;
+}
+async function loop() {   // エラーが出ても止まらないようにする
+  if (!running) return;
+  try { if (video.readyState >= 2 && video.videoWidth) await step(); } catch (e) { console.warn(e); }
   requestAnimationFrame(loop);
 }
 
@@ -151,8 +155,9 @@ document.getElementById("flip").onclick = async () => {
   try { await openCamera(); } catch (e) { toast(e.message); }
 };
 document.getElementById("reg").onclick = () => {
-  const u = current.find(c => !c.person);   // 一番大きい未登録の顔を登録
-  if (!u) return toast("登録できる未登録の顔がありません");
+  const u = current.find(c => !c.person) || current[0];   // 未登録の顔を優先。なければ一番大きい顔
+  if (!u) return toast("顔が見つかりません。顔を映してから押してください");
+  if (u.person && !confirm("この顔は「" + u.person.name + "」として認識されています。別人として新しく登録しますか?")) return;
   const id = db.next++;
   db.people.push({ id, name: "名無し" + String(id).padStart(3, "0"), desc: Array.from(u.desc) });
   save(); beep(880, 0.15); toast("登録しました。名前は、画面の名前をタップで変更できます");
