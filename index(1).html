@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>スカウター Step4</title>
+<style>
+  :root{ --lens:#7dffb0; --lens-dim:#2f9e62; --bg:#03140c; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--lens); font-family:"Hiragino Sans","Noto Sans JP",sans-serif; }
+  #stage{ position:relative; width:100%; height:100%; overflow:hidden; }
+  video,canvas{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #hud{ position:absolute; left:0; right:0; top:0; padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 0;
+        display:flex; justify-content:space-between; font-size:14px; text-shadow:0 0 8px #000; }
+  #list{ position:absolute; left:16px; right:16px; top:calc(env(safe-area-inset-top,0px) + 44px); text-shadow:0 0 8px #000; }
+  .row{ display:flex; justify-content:space-between; align-items:baseline; padding:6px 10px; margin-bottom:6px;
+        background:rgba(3,20,12,.6); border-left:3px solid var(--lens); font-size:17px; }
+  .row b{ font-size:30px; font-variant-numeric:tabular-nums; }
+
+  /* 戦闘力の色: 黒 → 金 → 赤 → 青 → 銀 */
+  .row.t0{ background:rgba(236,236,236,.88); color:#0b0b0b; border-left-color:#0b0b0b; text-shadow:none; }
+  .row.t1{ color:#ffd24a; border-left-color:#ffd24a; }
+  .row.t2{ color:#ff5a5a; border-left-color:#ff5a5a; }
+  .row.t3{ color:#58aaff; border-left-color:#58aaff; }
+  .row.t4{ color:#f1f5f8; border-left-color:#f1f5f8; text-shadow:0 0 10px #dfe8ee; }
+
+  #toast{ position:absolute; left:0; right:0; top:40%; padding:0 24px; font-size:18px; text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; pointer-events:none; z-index:30; }
+  #bar{ position:absolute; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; justify-content:center;
+        padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
+  button{ font:inherit; font-size:16px; color:var(--lens); background:rgba(3,20,12,.75); border:1.5px solid var(--lens);
+          border-radius:6px; padding:11px 16px; }
+  button:active{ background:var(--lens-dim); }
+  button:focus-visible{ outline:3px solid #fff; outline-offset:2px; }
+  button.danger{ color:#ff9a8a; border-color:#ff9a8a; }
+  button.small{ font-size:14px; padding:7px 10px; }
+  #start{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
+          background:var(--bg); text-align:center; padding:24px; z-index:40; }
+  #start h1{ margin:0; font-size:28px; letter-spacing:.12em; }
+  #start p{ margin:0; max-width:22em; line-height:1.7; color:#b8f5d0; }
+  #msg{ min-height:1.5em; color:#ffd27d; }
+
+  /* 登録一覧 */
+  #panel{ position:absolute; inset:0; z-index:20; background:rgba(3,20,12,.96); display:flex; flex-direction:column;
+          padding:calc(env(safe-area-inset-top,0px) + 12px) 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
+  #panel header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  #panel h2{ margin:0; font-size:20px; letter-spacing:.08em; }
+  #plist{ list-style:none; margin:0; padding:0; flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  #plist li{ display:flex; align-items:center; gap:8px; padding:10px; margin-bottom:8px; border-left:3px solid var(--lens); background:rgba(125,255,176,.07); }
+  #plist .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:17px; }
+  #plist .pw{ font-size:22px; font-variant-numeric:tabular-nums; margin-right:4px; }
+  .pw.t0{ background:#ececec; color:#0b0b0b; padding:0 8px; border-radius:4px; }
+  .pw.t1{ color:#ffd24a; }
+  .pw.t2{ color:#ff5a5a; }
+  .pw.t3{ color:#58aaff; }
+  .pw.t4{ color:#f1f5f8; text-shadow:0 0 8px #dfe8ee; }
+  #plist .empty{ border-left:none; background:none; color:#b8f5d0; justify-content:center; padding:32px 0; }
+  #panel .foot{ padding-top:12px; text-align:center; }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="hud"><span id="count">検出: 0人</span><span id="fps"></span></div>
+  <div id="list"></div>
+  <div id="toast" role="status"></div>
+  <div id="bar">
+    <button id="reg">この顔を登録</button>
+    <button id="show">登録一覧</button>
+    <button id="flip">カメラ切替</button>
+  </div>
+
+  <div id="panel" hidden>
+    <header><h2>登録一覧(<span id="pcount">0</span>人)</h2><button id="pclose">閉じる</button></header>
+    <ul id="plist"></ul>
+    <div class="foot"><button id="wipe" class="danger">全削除</button></div>
+  </div>
+
+  <div id="start">
+    <h1>スカウター</h1>
+    <p>顔の特徴の数値だけをこの端末の中に保存します。写真は保存せず、外にも送信しません。登録は本人の了承をもらってからにしてください。</p>
+    <button id="go">測定を始める</button>
+    <div id="msg" role="status"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js"></script>
+<script>
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/";
+const TH = 0.5;                       // この距離より近ければ同じ人(小さいほど厳しい)
+const KEY = "scouter.people";
+
+// ---- 戦闘力の基準(ここを書き換えれば調整できます) ----
+const P_MIN = 13;                     // いちばん低い値
+const P_MAX = 10000000;               // 実際に出る値の上限の目安(∞に近い高さ)
+const SKEW = 1.6;                     // 大きいほど高い値が出にくい
+const TIER_MIN = [13, 1000, 9000, 100000, 1000000];   // 色が変わる境目: 黒 / 金 / 赤 / 青 / 銀
+const TIERS = [
+  { cls: "t0", stroke: "#111111", glow: "#ffffff" },   // 黒
+  { cls: "t1", stroke: "#ffd24a", glow: "#ffd24a" },   // 金
+  { cls: "t2", stroke: "#ff5a5a", glow: "#ff5a5a" },   // 赤
+  { cls: "t3", stroke: "#58aaff", glow: "#58aaff" },   // 青
+  { cls: "t4", stroke: "#f1f5f8", glow: "#bfd3e0" }    // 銀
+];
+const COUNT_MS = 2200;                // 数字が上がりきるまでの時間
+const tierIdx = v => { let i = 0; TIER_MIN.forEach((m, k) => { if (v >= m) i = k; }); return i; };
+
+const $ = id => document.getElementById(id);
+const video = $("video"), cv = $("overlay"), ctx = cv.getContext("2d");
+const msg = $("msg"), listEl = $("list"), toastEl = $("toast");
+let facing = "environment", running = false, busy = false, switching = false, loopId = 0, uiStarted = false;
+let lastCount = 0, audioCtx = null, current = [], lastSig = "";
+const anims = new Map();              // 顔ごとの「数字が上がる演出」の状態
+let unknowns = [], unkSeq = 0;        // 未登録の顔を、起動中は同じ人として覚えておく
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- 保存(この端末のブラウザの中だけ) ----
+function load() { try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && d.people) return d; } catch (e) {} return { next: 1, people: [] }; }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toast("保存できませんでした"); } }
+let db = load();
+function toast(t) { toastEl.textContent = t; clearTimeout(toast.t); toast.t = setTimeout(() => toastEl.textContent = "", 2500); }
+
+// ---- 戦闘力: 同じ種(seed)からは毎回同じ値になる ----
+function hash(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rand01(a) { a = (a + 0x6D2B79F5) >>> 0; let t = Math.imul(a ^ (a >>> 15), a | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+function power(seed) { return Math.round(P_MIN * Math.pow(P_MAX / P_MIN, Math.pow(rand01(hash(seed)), SKEW))); }
+const seedOf = p => p.seed || "p" + p.id;
+const personPower = p => power(seedOf(p));
+
+// ---- 音 ----
+function beep(f = 1320, d = 0.08) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "square"; o.frequency.value = f;
+  g.gain.setValueAtTime(0.08, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+  o.connect(g).connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + d);
+}
+const pipipi = () => [0, 120, 240].forEach(t => setTimeout(() => beep(), t));
+const bon = () => beep(90, 0.5);
+
+// ---- 照合 ----
+function identify(desc) {
+  let best = null, bd = 9;
+  for (const p of db.people) { const d = faceapi.euclideanDistance(desc, p.desc); if (d < bd) { bd = d; best = p; } }
+  return { p: bd < TH ? best : null, d: bd, near: best };
+}
+function unknownFor(desc) {           // 未登録の顔も、起動中は同じ人なら同じ数値にする
+  for (const u of unknowns) if (faceapi.euclideanDistance(desc, u.desc) < TH) return u;
+  const u = { id: ++unkSeq, desc: Array.from(desc), seed: "u" + Array.from(desc).slice(0, 8).map(v => Math.round(v * 5)).join(",") };
+  unknowns.push(u); if (unknowns.length > 30) unknowns.shift();
+  return u;
+}
+
+// ---- カメラ ----
+async function openCamera() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
+  } catch (e) {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+  video.srcObject = stream;
+  video.style.transform = facing === "user" ? "scaleX(-1)" : "";
+  await new Promise(res => { if (video.readyState >= 1 && video.videoWidth) res(); else video.onloadedmetadata = () => res(); });
+  await video.play();
+  for (let i = 0; i < 60 && (!video.videoWidth || video.readyState < 2); i++) await sleep(50);   // 最初の1コマが来るまで待つ
+}
+
+// ---- 数字が上がっていく演出 ----
+function updateAnim(c, now) {
+  let a = anims.get(c.key);
+  if (!a || now - a.last > 1500 || a.target !== c.power) {   // 初めて映った / しばらく映っていなかった → 最初から測り直す
+    a = { t0: now, target: c.power, done: false, last: now };
+    anims.set(c.key, a);
+  }
+  a.last = now;
+  const s = Math.min(1, (now - a.t0) / COUNT_MS), e = 1 - Math.pow(1 - s, 2.2);
+  c.shown = s >= 1 ? a.target : Math.max(P_MIN, Math.round(P_MIN * Math.pow(a.target / P_MIN, e)));
+  if (s >= 1 && !a.done) { a.done = true; if (a.target > 9000) bon(); }
+  if (anims.size > 60) for (const [k, v] of anims) if (now - v.last > 60000) anims.delete(k);
+}
+
+// ---- 描画 ----
+function draw() {
+  const cw = cv.clientWidth, ch = cv.clientHeight;
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  const vw = video.videoWidth, vh = video.videoHeight;
+  ctx.clearRect(0, 0, cw, ch);
+  if (!vw || !vh) return;
+  const s = Math.max(cw / vw, ch / vh), ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  ctx.lineWidth = 2; ctx.shadowBlur = 8; ctx.font = "14px sans-serif";
+  for (const c of current) {
+    const t = TIERS[tierIdx(c.shown)];
+    ctx.strokeStyle = ctx.fillStyle = t.stroke; ctx.shadowColor = t.glow;
+    const b = c.box, w = b.width * s, h = b.height * s, y = b.y * s + oy, k = Math.min(w, h) * 0.22;
+    let x = b.x * s + ox; if (facing === "user") x = cw - x - w;   // 内カメラは鏡像にそろえる
+    ctx.beginPath();
+    [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, dx, dy]) => {
+      ctx.moveTo(px + dx * k, py); ctx.lineTo(px, py); ctx.lineTo(px, py + dy * k);
+    });
+    ctx.stroke();
+    ctx.fillText((c.person ? c.person.name : "未登録") + (c.near ? "  d=" + c.d.toFixed(2) : ""), x, Math.max(14, y - 6));
+  }
+}
+
+function renderList() {   // 戦闘力は画面の決まった位置に表示(大きい顔から最大3人)
+  const items = current.slice(0, 3);
+  const sig = items.map(c => c.key + "|" + (c.person ? c.person.name : "")).join(";");
+  if (sig !== lastSig) {   // 顔の顔ぶれや名前が変わったときだけ作り直す(タップを邪魔しないため)
+    listEl.innerHTML = items.map(c =>
+      `<div class="row" data-id="${c.person ? c.person.id : ""}"><span>${c.person ? esc(c.person.name) : "未登録"}</span><b></b></div>`).join("");
+    lastSig = sig;
+  }
+  items.forEach((c, i) => {
+    const row = listEl.children[i]; if (!row) return;
+    row.className = "row " + TIERS[tierIdx(c.shown)].cls;
+    row.lastChild.textContent = c.shown.toLocaleString();
+  });
+}
+
+function uiTick() {   // 数字がなめらかに上がるよう、検出とは別に毎フレーム更新する
+  const now = performance.now();
+  for (const c of current) updateAnim(c, now);
+  draw(); renderList();
+  requestAnimationFrame(uiTick);
+}
+
+// ---- 検出 ----
+async function step() {
+  const t0 = performance.now();
+  const res = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+    .withFaceLandmarks().withFaceDescriptors();
+  current = res.map(r => {
+    const m = identify(r.descriptor), p = m.p;
+    let key, seed, uk = null;
+    if (p) { key = "p" + p.id; seed = seedOf(p); }
+    else { uk = unknownFor(r.descriptor); key = "u" + uk.id; seed = uk.seed; }
+    return { box: r.detection.box, desc: r.descriptor, person: p, key, seed, power: power(seed), shown: P_MIN, d: m.d, near: m.near };
+  }).sort((a, b) => b.box.width - a.box.width);
+  $("count").textContent = "検出: " + current.length + "人";
+  $("fps").textContent = Math.round(1000 / (performance.now() - t0)) + " fps";
+  if (lastCount === 0 && current.length > 0) pipipi();
+  lastCount = current.length;
+}
+
+async function loop(id) {   // エラーが出ても止まらない。切替のときは古いループが確実に終わる
+  if (!running || id !== loopId) return;
+  busy = true;
+  try { if (video.readyState >= 2 && video.videoWidth) await step(); } catch (e) { console.warn(e); }
+  busy = false;
+  requestAnimationFrame(() => loop(id));
+}
+function startLoop() { running = true; lastCount = 0; loop(++loopId); }
+async function stopLoop() {
+  running = false; loopId++;
+  while (busy) await sleep(30);   // 処理中の1回が終わるまで待つ
+  current = []; lastSig = ""; listEl.innerHTML = ""; ctx.clearRect(0, 0, cv.width, cv.height);
+  $("count").textContent = "検出: 0人";
+}
+
+// ---- 登録一覧 ----
+function renderPanel() {
+  $("pcount").textContent = db.people.length;
+  $("plist").innerHTML = db.people.length
+    ? db.people.map(p => { const pw = personPower(p); return `<li data-id="${p.id}">
+        <span class="name">${esc(p.name)}</span><b class="pw ${TIERS[tierIdx(pw)].cls}">${pw.toLocaleString()}</b>
+        <button class="small" data-act="rename">名前変更</button>
+        <button class="small danger" data-act="del">削除</button></li>`; }).join("")
+    : `<li class="empty">まだ登録がありません。顔を映して「この顔を登録」を押してください</li>`;
+}
+function openPanel() { renderPanel(); $("panel").hidden = false; }
+function closePanel() { $("panel").hidden = true; }
+
+function renamePerson(p) {
+  const n = prompt("名前を入力してください", p.name);
+  if (n && n.trim()) { p.name = n.trim().slice(0, 20); save(); lastSig = ""; renderPanel(); }
+}
+
+// ---- ボタン ----
+$("go").onclick = async () => {
+  try {
+    msg.textContent = "準備中です…(初回は少し時間がかかります)";
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await Promise.all([faceapi.nets.tinyFaceDetector, faceapi.nets.faceLandmark68Net, faceapi.nets.faceRecognitionNet].map(n => n.loadFromUri(MODEL_URL)));
+    await openCamera();
+    $("start").hidden = true; startLoop();
+    if (!uiStarted) { uiStarted = true; uiTick(); }
+  } catch (e) { msg.textContent = "起動できませんでした。カメラの許可を確認してください。(" + e.message + ")"; }
+};
+
+$("flip").onclick = async () => {
+  if (switching) return;
+  switching = true;
+  const prev = facing;
+  await stopLoop();                 // ① 検出をいったん止める
+  facing = facing === "environment" ? "user" : "environment";
+  try {
+    await openCamera();             // ② カメラを開き直し、最初の1コマを待つ
+  } catch (e) {
+    toast("切り替えできませんでした: " + e.message);
+    facing = prev;
+    try { await openCamera(); } catch (e2) { toast("カメラを開けません: " + e2.message); }
+  }
+  startLoop();                      // ③ 検出を最初から再開
+  switching = false;
+};
+
+$("reg").onclick = () => {
+  const u = current.find(c => !c.person) || current[0];   // 未登録の顔を優先。なければ一番大きい顔
+  if (!u) return toast("顔が見つかりません。顔を映してから押してください");
+  if (u.person && !confirm("この顔は「" + u.person.name + "」として認識されています。別人として新しく登録しますか?")) return;
+  const id = db.next++;
+  const person = { id, name: "名無し" + String(id).padStart(3, "0"), desc: Array.from(u.desc) };
+  if (!u.person) person.seed = u.seed;   // 登録前に出ていた戦闘力をそのまま引き継ぐ
+  db.people.push(person);
+  save(); beep(880, 0.15); toast("登録しました。「登録一覧」から名前を変更できます");
+};
+
+$("show").onclick = openPanel;
+$("pclose").onclick = closePanel;
+
+$("plist").onclick = e => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  const id = +btn.closest("li").dataset.id, p = db.people.find(x => x.id === id);
+  if (!p) return;
+  if (btn.dataset.act === "rename") renamePerson(p);
+  if (btn.dataset.act === "del" && confirm("「" + p.name + "」を削除します。よろしいですか?")) {
+    db.people = db.people.filter(x => x.id !== id); save(); lastSig = ""; renderPanel(); toast("削除しました");
+  }
+};
+
+$("wipe").onclick = () => {
+  if (confirm("登録した顔データをすべて削除します。よろしいですか?")) { db = { next: 1, people: [] }; save(); lastSig = ""; renderPanel(); toast("削除しました"); }
+};
+
+listEl.onclick = e => {   // 画面の戦闘力の行をタップ → 名前変更
+  const id = +(e.target.closest(".row")?.dataset.id || 0), p = db.people.find(x => x.id === id);
+  if (p) renamePerson(p);
+};
+</script>
+</body>
+</html>
