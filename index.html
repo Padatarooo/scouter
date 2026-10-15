@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>スカウター Step2</title>
+<title>スカウター Step3</title>
 <style>
   :root{ --lens:#7dffb0; --lens-dim:#2f9e62; --bg:#03140c; }
   *{ box-sizing:border-box; }
@@ -16,18 +16,32 @@
   .row{ display:flex; justify-content:space-between; align-items:baseline; padding:6px 10px; margin-bottom:6px;
         background:rgba(3,20,12,.6); border-left:3px solid var(--lens); font-size:17px; }
   .row b{ font-size:30px; font-variant-numeric:tabular-nums; }
-  #toast{ position:absolute; left:0; right:0; top:40%; padding:0 24px; font-size:18px; text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; }
+  #toast{ position:absolute; left:0; right:0; top:40%; padding:0 24px; font-size:18px; text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; pointer-events:none; z-index:30; }
   #bar{ position:absolute; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; justify-content:center;
         padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
   button{ font:inherit; font-size:16px; color:var(--lens); background:rgba(3,20,12,.75); border:1.5px solid var(--lens);
           border-radius:6px; padding:11px 16px; }
   button:active{ background:var(--lens-dim); }
   button:focus-visible{ outline:3px solid #fff; outline-offset:2px; }
+  button.danger{ color:#ff9a8a; border-color:#ff9a8a; }
+  button.small{ font-size:14px; padding:7px 10px; }
   #start{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
-          background:var(--bg); text-align:center; padding:24px; }
+          background:var(--bg); text-align:center; padding:24px; z-index:40; }
   #start h1{ margin:0; font-size:28px; letter-spacing:.12em; }
   #start p{ margin:0; max-width:22em; line-height:1.7; color:#b8f5d0; }
   #msg{ min-height:1.5em; color:#ffd27d; }
+
+  /* 登録一覧 */
+  #panel{ position:absolute; inset:0; z-index:20; background:rgba(3,20,12,.96); display:flex; flex-direction:column;
+          padding:calc(env(safe-area-inset-top,0px) + 12px) 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
+  #panel header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  #panel h2{ margin:0; font-size:20px; letter-spacing:.08em; }
+  #plist{ list-style:none; margin:0; padding:0; flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  #plist li{ display:flex; align-items:center; gap:8px; padding:10px; margin-bottom:8px; border-left:3px solid var(--lens); background:rgba(125,255,176,.07); }
+  #plist .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:17px; }
+  #plist .pw{ font-size:22px; font-variant-numeric:tabular-nums; margin-right:4px; }
+  #plist .empty{ border-left:none; background:none; color:#b8f5d0; justify-content:center; padding:32px 0; }
+  #panel .foot{ padding-top:12px; text-align:center; }
   [hidden]{ display:none !important; }
 </style>
 </head>
@@ -40,9 +54,16 @@
   <div id="toast" role="status"></div>
   <div id="bar">
     <button id="reg">この顔を登録</button>
+    <button id="show">登録一覧</button>
     <button id="flip">カメラ切替</button>
-    <button id="wipe">全削除</button>
   </div>
+
+  <div id="panel" hidden>
+    <header><h2>登録一覧(<span id="pcount">0</span>人)</h2><button id="pclose">閉じる</button></header>
+    <ul id="plist"></ul>
+    <div class="foot"><button id="wipe" class="danger">全削除</button></div>
+  </div>
+
   <div id="start">
     <h1>スカウター</h1>
     <p>顔の特徴の数値だけをこの端末の中に保存します。写真は保存せず、外にも送信しません。登録は本人の了承をもらってからにしてください。</p>
@@ -56,9 +77,13 @@
 const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/";
 const TH = 0.5;                       // この距離より近ければ同じ人(小さいほど厳しい)
 const KEY = "scouter.people";
-const video = document.getElementById("video"), cv = document.getElementById("overlay"), ctx = cv.getContext("2d");
-const msg = document.getElementById("msg"), listEl = document.getElementById("list"), toastEl = document.getElementById("toast");
-let facing = "environment", running = false, lastCount = 0, audioCtx = null, current = [], lastHtml = "";
+const $ = id => document.getElementById(id);
+const video = $("video"), cv = $("overlay"), ctx = cv.getContext("2d");
+const msg = $("msg"), listEl = $("list"), toastEl = $("toast");
+let facing = "environment", running = false, busy = false, switching = false, loopId = 0;
+let lastCount = 0, audioCtx = null, current = [], lastHtml = "";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // ---- 保存(この端末のブラウザの中だけ) ----
 function load() { try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && d.people) return d; } catch (e) {} return { next: 1, people: [] }; }
@@ -70,6 +95,7 @@ function toast(t) { toastEl.textContent = t; clearTimeout(toast.t); toast.t = se
 function hash(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
 function rand01(a) { a = (a + 0x6D2B79F5) >>> 0; let t = Math.imul(a ^ (a >>> 15), a | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
 function power(seed) { return Math.max(5, Math.round(5 * Math.pow(10, rand01(hash(seed)) * 5.3))); } // 5〜約100万
+const personPower = p => power("p" + p.id);
 
 // ---- 音 ----
 function beep(f = 1320, d = 0.08) {
@@ -89,17 +115,29 @@ function identify(desc) {
   return { p: bd < TH ? best : null, d: bd, near: best };
 }
 
+// ---- カメラ ----
 async function openCamera() {
   if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
-  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: false });
+  video.srcObject = null;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
+  } catch (e) {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+  video.srcObject = stream;
   video.style.transform = facing === "user" ? "scaleX(-1)" : "";
+  await new Promise(res => { if (video.readyState >= 1 && video.videoWidth) res(); else video.onloadedmetadata = () => res(); });
   await video.play();
+  for (let i = 0; i < 60 && (!video.videoWidth || video.readyState < 2); i++) await sleep(50);   // 最初の1コマが来るまで待つ
 }
 
 function draw() {
   const cw = cv.clientWidth, ch = cv.clientHeight; cv.width = cw; cv.height = ch;
-  const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(cw / vw, ch / vh), ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  const vw = video.videoWidth, vh = video.videoHeight;
   ctx.clearRect(0, 0, cw, ch);
+  if (!vw || !vh) return;
+  const s = Math.max(cw / vw, ch / vh), ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
   ctx.strokeStyle = ctx.fillStyle = "#7dffb0"; ctx.lineWidth = 2; ctx.shadowColor = "#7dffb0"; ctx.shadowBlur = 8; ctx.font = "14px sans-serif";
   for (const c of current) {
     const b = c.box, w = b.width * s, h = b.height * s, y = b.y * s + oy, k = Math.min(w, h) * 0.22;
@@ -115,7 +153,7 @@ function draw() {
 
 function renderList() {   // 戦闘力は画面の決まった位置に表示(大きい顔から最大3人)
   const html = current.slice(0, 3).map(c =>
-    `<div class="row" data-id="${c.person ? c.person.id : ""}"><span>${c.person ? c.person.name : "未登録"}</span><b>${c.power.toLocaleString()}</b></div>`).join("");
+    `<div class="row" data-id="${c.person ? c.person.id : ""}"><span>${c.person ? esc(c.person.name) : "未登録"}</span><b>${c.power.toLocaleString()}</b></div>`).join("");
   if (html !== lastHtml) { listEl.innerHTML = html; lastHtml = html; }
 }
 
@@ -129,47 +167,102 @@ async function step() {
     return { box: r.detection.box, desc: r.descriptor, person: p, power: power(seed), d: m.d, near: m.near };
   }).sort((a, b) => b.box.width - a.box.width);
   draw(); renderList();
-  document.getElementById("count").textContent = "検出: " + current.length + "人";
-  document.getElementById("fps").textContent = Math.round(1000 / (performance.now() - t0)) + " fps";
+  $("count").textContent = "検出: " + current.length + "人";
+  $("fps").textContent = Math.round(1000 / (performance.now() - t0)) + " fps";
   if (lastCount === 0 && current.length > 0) { pipipi(); if (current.some(c => c.power > 9000)) setTimeout(bon, 450); }
   lastCount = current.length;
 }
-async function loop() {   // エラーが出ても止まらないようにする
-  if (!running) return;
+
+async function loop(id) {   // エラーが出ても止まらない。切替のときは古いループが確実に終わる
+  if (!running || id !== loopId) return;
+  busy = true;
   try { if (video.readyState >= 2 && video.videoWidth) await step(); } catch (e) { console.warn(e); }
-  requestAnimationFrame(loop);
+  busy = false;
+  requestAnimationFrame(() => loop(id));
+}
+function startLoop() { running = true; lastCount = 0; loop(++loopId); }
+async function stopLoop() {
+  running = false; loopId++;
+  while (busy) await sleep(30);   // 処理中の1回が終わるまで待つ
+  current = []; lastHtml = ""; listEl.innerHTML = ""; ctx.clearRect(0, 0, cv.width, cv.height);
+  $("count").textContent = "検出: 0人";
+}
+
+// ---- 登録一覧 ----
+function renderPanel() {
+  $("pcount").textContent = db.people.length;
+  $("plist").innerHTML = db.people.length
+    ? db.people.map(p => `<li data-id="${p.id}">
+        <span class="name">${esc(p.name)}</span><b class="pw">${personPower(p).toLocaleString()}</b>
+        <button class="small" data-act="rename">名前変更</button>
+        <button class="small danger" data-act="del">削除</button></li>`).join("")
+    : `<li class="empty">まだ登録がありません。顔を映して「この顔を登録」を押してください</li>`;
+}
+function openPanel() { renderPanel(); $("panel").hidden = false; }
+function closePanel() { $("panel").hidden = true; }
+
+function renamePerson(p) {
+  const n = prompt("名前を入力してください", p.name);
+  if (n && n.trim()) { p.name = n.trim().slice(0, 20); save(); lastHtml = ""; renderPanel(); }
 }
 
 // ---- ボタン ----
-document.getElementById("go").onclick = async () => {
+$("go").onclick = async () => {
   try {
     msg.textContent = "準備中です…(初回は少し時間がかかります)";
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await Promise.all([faceapi.nets.tinyFaceDetector, faceapi.nets.faceLandmark68Net, faceapi.nets.faceRecognitionNet].map(n => n.loadFromUri(MODEL_URL)));
     await openCamera();
-    document.getElementById("start").hidden = true; running = true; loop();
+    $("start").hidden = true; startLoop();
   } catch (e) { msg.textContent = "起動できませんでした。カメラの許可を確認してください。(" + e.message + ")"; }
 };
-document.getElementById("flip").onclick = async () => {
+
+$("flip").onclick = async () => {
+  if (switching) return;
+  switching = true;
+  const prev = facing;
+  await stopLoop();                 // ① 検出をいったん止める
   facing = facing === "environment" ? "user" : "environment";
-  try { await openCamera(); } catch (e) { toast(e.message); }
+  try {
+    await openCamera();             // ② カメラを開き直し、最初の1コマを待つ
+  } catch (e) {
+    toast("切り替えできませんでした: " + e.message);
+    facing = prev;
+    try { await openCamera(); } catch (e2) { toast("カメラを開けません: " + e2.message); }
+  }
+  startLoop();                      // ③ 検出を最初から再開
+  switching = false;
 };
-document.getElementById("reg").onclick = () => {
+
+$("reg").onclick = () => {
   const u = current.find(c => !c.person) || current[0];   // 未登録の顔を優先。なければ一番大きい顔
   if (!u) return toast("顔が見つかりません。顔を映してから押してください");
   if (u.person && !confirm("この顔は「" + u.person.name + "」として認識されています。別人として新しく登録しますか?")) return;
   const id = db.next++;
   db.people.push({ id, name: "名無し" + String(id).padStart(3, "0"), desc: Array.from(u.desc) });
-  save(); beep(880, 0.15); toast("登録しました。名前は、画面の名前をタップで変更できます");
+  save(); beep(880, 0.15); toast("登録しました。「登録一覧」から名前を変更できます");
 };
-document.getElementById("wipe").onclick = () => {
-  if (confirm("登録した顔データをすべて削除します。よろしいですか?")) { db = { next: 1, people: [] }; save(); toast("削除しました"); }
-};
-listEl.onclick = e => {   // 登録済みの行をタップ → 名前変更
-  const id = +(e.target.closest(".row")?.dataset.id || 0), p = db.people.find(x => x.id === id);
+
+$("show").onclick = openPanel;
+$("pclose").onclick = closePanel;
+
+$("plist").onclick = e => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  const id = +btn.closest("li").dataset.id, p = db.people.find(x => x.id === id);
   if (!p) return;
-  const n = prompt("名前を入力してください", p.name);
-  if (n && n.trim()) { p.name = n.trim().slice(0, 20); save(); lastHtml = ""; }
+  if (btn.dataset.act === "rename") renamePerson(p);
+  if (btn.dataset.act === "del" && confirm("「" + p.name + "」を削除します。よろしいですか?")) {
+    db.people = db.people.filter(x => x.id !== id); save(); lastHtml = ""; renderPanel(); toast("削除しました");
+  }
+};
+
+$("wipe").onclick = () => {
+  if (confirm("登録した顔データをすべて削除します。よろしいですか?")) { db = { next: 1, people: [] }; save(); lastHtml = ""; renderPanel(); toast("削除しました"); }
+};
+
+listEl.onclick = e => {   // 画面の戦闘力の行をタップ → 名前変更
+  const id = +(e.target.closest(".row")?.dataset.id || 0), p = db.people.find(x => x.id === id);
+  if (p) renamePerson(p);
 };
 </script>
 </body>
