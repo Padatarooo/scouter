@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>スカウター Step10</title>
+<style>
+  :root{ --lens:#7dffb0; --lens-dim:#2f9e62; --bg:#03140c; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--lens); font-family:"Hiragino Sans","Noto Sans JP",sans-serif; }
+  #stage{ position:relative; width:100%; height:100%; overflow:hidden; }
+  video,canvas{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #hud{ position:absolute; left:0; right:0; top:0; padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 0;
+        display:flex; justify-content:space-between; font-size:14px; text-shadow:0 0 8px #000; pointer-events:none; }
+  #list{ position:absolute; left:16px; right:16px; top:calc(env(safe-area-inset-top,0px) + 44px); text-shadow:0 0 8px #000; pointer-events:none; }
+  .row{ display:flex; justify-content:space-between; align-items:baseline; padding:6px 10px; margin-bottom:6px;
+        background:rgba(3,20,12,.6); border-left:3px solid var(--lens); font-size:17px; pointer-events:auto; }
+  .row b{ font-size:30px; font-variant-numeric:tabular-nums; }
+  .row.sel{ border-left-color:#ff4040; box-shadow:0 0 0 1.5px #ff4040 inset; }
+
+  #info{ position:absolute; left:16px; right:16px; bottom:calc(env(safe-area-inset-bottom,0px) + 84px); padding:10px 12px;
+         background:rgba(3,20,12,.8); border-left:3px solid #ff4040; text-shadow:0 0 6px #000; pointer-events:none; }
+  #info .ihead{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+  #info .iname{ font-size:20px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #info .ipw{ font-size:26px; font-variant-numeric:tabular-nums; }
+  #info .imemo{ margin-top:6px; font-size:15px; line-height:1.5; color:#d6ffe6; white-space:pre-wrap; overflow-wrap:anywhere;
+                display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }
+  #info .imemo.none{ color:#7fb99a; }
+  #toast{ position:absolute; left:0; right:0; top:40%; padding:0 24px; font-size:18px; text-align:center; color:#ffd27d; text-shadow:0 0 6px #000; pointer-events:none; z-index:30; }
+  #bar{ position:absolute; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; justify-content:center;
+        padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); pointer-events:none; }
+  #bar button{ pointer-events:auto; }
+  button{ font:inherit; font-size:16px; color:var(--lens); background:rgba(3,20,12,.75); border:1.5px solid var(--lens);
+          border-radius:6px; padding:11px 16px; }
+  button:active{ background:var(--lens-dim); }
+  button:focus-visible{ outline:3px solid #fff; outline-offset:2px; }
+  button.danger{ color:#ff9a8a; border-color:#ff9a8a; }
+  button.small{ font-size:14px; padding:7px 10px; }
+  #start{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
+          background:var(--bg); text-align:center; padding:24px; z-index:40; }
+  #start h1{ margin:0; font-size:28px; letter-spacing:.12em; }
+  #start p{ margin:0; max-width:22em; line-height:1.7; color:#b8f5d0; }
+  #msg{ min-height:1.5em; color:#ffd27d; }
+
+  /* 登録一覧 */
+  #panel{ position:absolute; inset:0; z-index:20; background:rgba(3,20,12,.96); display:flex; flex-direction:column;
+          padding:calc(env(safe-area-inset-top,0px) + 12px) 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
+  #panel header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  #panel h2{ margin:0; font-size:20px; letter-spacing:.08em; }
+  #plist{ list-style:none; margin:0; padding:0; flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  #plist li{ padding:10px; margin-bottom:8px; border-left:3px solid var(--lens); background:rgba(125,255,176,.07); }
+  #plist .top{ display:flex; align-items:center; gap:8px; }
+  #plist .memo{ display:block; width:100%; min-height:64px; margin-top:8px; padding:8px; resize:vertical; font:inherit; font-size:16px;
+                color:#d6ffe6; background:rgba(3,20,12,.7); border:1px solid var(--lens-dim); border-radius:6px; }
+  #plist .memo:focus{ outline:2px solid var(--lens); }
+  #plist .name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:17px; }
+  #plist .pw{ font-size:22px; font-variant-numeric:tabular-nums; margin-right:4px; }
+  #plist .empty{ display:flex; border-left:none; background:none; color:#b8f5d0; justify-content:center; padding:32px 0; }
+  #panel .foot{ padding-top:12px; text-align:center; }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="hud"><span id="count">検出: 0人</span><span id="fps"></span></div>
+  <div id="list"></div>
+  <div id="info" hidden></div>
+  <div id="toast" role="status"></div>
+  <div id="bar">
+    <button id="reg">この顔を登録</button>
+    <button id="show">登録一覧</button>
+    <button id="flip">カメラ切替</button>
+  </div>
+
+  <div id="panel" hidden>
+    <header><h2>登録一覧(<span id="pcount">0</span>人)</h2><button id="pclose">閉じる</button></header>
+    <ul id="plist"></ul>
+    <div class="foot"><button id="wipe" class="danger">全削除</button></div>
+  </div>
+
+  <div id="start">
+    <h1>スカウター</h1>
+    <p>顔の特徴の数値だけをこの端末の中に保存します。写真は保存せず、外にも送信しません。登録は本人の了承をもらってからにしてください。</p>
+    <button id="go">測定を始める</button>
+    <div id="msg" role="status"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script>
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/";
+const TH = 0.45;                      // この距離より近ければ同じ人(小さいほど厳しい。別人と間違えるときは下げる)
+const MARGIN = 0.05;                  // 1番目と2番目に近い人の差がこれより小さいときは「判別できない」として未登録扱い
+const UNK_TH = 0.5;                   // 未登録の顔を起動中に同じ人とみなす距離
+const SAMPLES = 5;                    // 登録時に追加で撮るサンプル数
+const KEY = "scouter.people";
+
+// ---- 戦闘力の基準(ここを書き換えれば調整できます) ----
+const P_MIN = 5;                      // いちばん低い値
+const DECADES = 5.3;                  // 大きいほど高い値が出る(5.3 で最大およそ100万)
+const COUNT_MS = 2200;                // 数字が上がりきるまでの時間
+
+const $ = id => document.getElementById(id);
+const video = $("video"), cv = $("overlay"), ctx = cv.getContext("2d");
+const msg = $("msg"), listEl = $("list"), toastEl = $("toast"), infoEl = $("info");
+let infoSig = "";
+let facing = "environment", running = false, busy = false, switching = false, loopId = 0, uiStarted = false;
+let selectedKey = null, selSeen = 0;   // 枠をタップして選んだ顔
+let lastCount = 0, lastTick = 0, audioCtx = null, current = [], lastSig = "";
+const anims = new Map();              // 顔ごとの「数字が上がる演出」の状態
+let unknowns = [], unkSeq = 0;        // 未登録の顔を、起動中は同じ人として覚えておく
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- 保存(この端末のブラウザの中だけ) ----
+function load() { try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && d.people) return d; } catch (e) {} return { next: 1, people: [] }; }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toast("保存できませんでした"); } }
+let db = load();
+function toast(t) { toastEl.textContent = t; clearTimeout(toast.t); toast.t = setTimeout(() => toastEl.textContent = "", 2500); }
+
+// ---- 戦闘力: 同じ種(seed)からは毎回同じ値になる ----
+function hash(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rand01(a) { a = (a + 0x6D2B79F5) >>> 0; let t = Math.imul(a ^ (a >>> 15), a | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+function power(seed) { return Math.max(P_MIN, Math.round(P_MIN * Math.pow(10, rand01(hash(seed)) * DECADES))); }
+const seedOf = p => p.seed || "p" + p.id;
+const personPower = p => power(seedOf(p));
+
+// ---- 音 ----
+function beep(f = 1320, d = 0.08) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "square"; o.frequency.value = f;
+  g.gain.setValueAtTime(0.08, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+  o.connect(g).connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + d);
+}
+const bon = () => beep(90, 0.5);
+
+// ---- 照合 ----
+function identify(desc) {
+  const list = db.people.map(p => {
+    const ds = p.descs || [p.desc];   // 古い登録(1枚だけ)もそのまま使える
+    let d = 9; for (const x of ds) d = Math.min(d, faceapi.euclideanDistance(desc, x));
+    return { p, d };
+  }).sort((a, b) => a.d - b.d);
+  const best = list[0], second = list[1];
+  const ok = best && best.d < TH && (!second || second.d - best.d >= MARGIN);   // 近い人が2人いて決めきれないときは決めない
+  return { p: ok ? best.p : null, d: best ? best.d : 9, near: best ? best.p : null };
+}
+function unknownFor(desc) {           // 未登録の顔も、起動中は同じ人なら同じ数値にする
+  for (const u of unknowns) if (faceapi.euclideanDistance(desc, u.desc) < UNK_TH) return u;
+  const u = { id: ++unkSeq, desc: Array.from(desc), seed: "u" + Array.from(desc).slice(0, 8).map(v => Math.round(v * 5)).join(",") };
+  unknowns.push(u); if (unknowns.length > 30) unknowns.shift();
+  return u;
+}
+
+// ---- カメラ ----
+async function openCamera() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
+  } catch (e) {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+  video.srcObject = stream;
+  video.style.transform = facing === "user" ? "scaleX(-1)" : "";
+  await new Promise(res => { if (video.readyState >= 1 && video.videoWidth) res(); else video.onloadedmetadata = () => res(); });
+  await video.play();
+  for (let i = 0; i < 60 && (!video.videoWidth || video.readyState < 2); i++) await sleep(50);   // 最初の1コマが来るまで待つ
+}
+
+// ---- 数字が上がっていく演出 ----
+function updateAnim(c, now) {
+  let a = anims.get(c.key);
+  if (!a || now - a.last > 1500 || a.target !== c.power) {   // 初めて映った / しばらく映っていなかった → 最初から測り直す
+    a = { t0: now, target: c.power, done: false, last: now };
+    anims.set(c.key, a);
+  }
+  a.last = now;
+  const s = Math.min(1, (now - a.t0) / COUNT_MS), e = 1 - Math.pow(1 - s, 2.2);
+  c.shown = s >= 1 ? a.target : Math.max(P_MIN, Math.round(P_MIN * Math.pow(a.target / P_MIN, e)));
+  c.counting = s < 1;   // 数字が上がっている最中
+  if (s >= 1 && !a.done) { a.done = true; if (a.target > 9000) bon(); }
+  if (anims.size > 60) for (const [k, v] of anims) if (now - v.last > 60000) anims.delete(k);
+}
+
+// ---- 中央の照準と、狙ったものの輪郭・名前 ----
+const SEG_W = 200;        // 輪郭を調べる画像の横幅(大きいほど細かいが重い)
+const FACE_PAD = 0.15;    // 顔の枠をこの割合だけ外へ広げた範囲は、輪郭を取らない(人は対象外)
+const BG_RATIO = 0.012;   // 背景の色とみなす割合(小さいほど背景を広く判定、大きいほど物体を広く取る)
+const OUTLINE_GROW = 3;   // 輪郭を物体より外側へふくらませる量(大きいほど、ゆとりを持って囲む。0でぴったり)
+const OBJ_MS = 600;       // 物体認識の間隔(ミリ秒。大きいほど軽い)
+const OBJ_SCORE = 0.35;   // 物体認識の自信がこれ未満なら採用しない
+const JA = { person: "人", bicycle: "自転車", car: "車", motorcycle: "バイク", airplane: "飛行機", bus: "バス", train: "電車", truck: "トラック", boat: "ボート",
+  "traffic light": "信号機", "fire hydrant": "消火栓", "stop sign": "一時停止標識", "parking meter": "パーキングメーター", bench: "ベンチ", bird: "鳥", cat: "猫", dog: "犬",
+  horse: "馬", sheep: "羊", cow: "牛", elephant: "象", bear: "クマ", zebra: "シマウマ", giraffe: "キリン", backpack: "リュック", umbrella: "傘", handbag: "ハンドバッグ",
+  tie: "ネクタイ", suitcase: "スーツケース", frisbee: "フリスビー", skis: "スキー板", snowboard: "スノーボード", "sports ball": "ボール", kite: "凧", "baseball bat": "バット",
+  "baseball glove": "グローブ", skateboard: "スケートボード", surfboard: "サーフボード", "tennis racket": "ラケット", bottle: "ボトル", "wine glass": "ワイングラス", cup: "コップ",
+  fork: "フォーク", knife: "ナイフ", spoon: "スプーン", bowl: "ボウル", banana: "バナナ", apple: "りんご", sandwich: "サンドイッチ", orange: "オレンジ", broccoli: "ブロッコリー",
+  carrot: "にんじん", "hot dog": "ホットドッグ", pizza: "ピザ", donut: "ドーナツ", cake: "ケーキ", chair: "椅子", couch: "ソファ", "potted plant": "観葉植物", bed: "ベッド",
+  "dining table": "テーブル", toilet: "トイレ", tv: "テレビ", laptop: "ノートPC", mouse: "マウス", remote: "リモコン", keyboard: "キーボード", "cell phone": "スマホ",
+  microwave: "電子レンジ", oven: "オーブン", toaster: "トースター", sink: "流し台", refrigerator: "冷蔵庫", book: "本", clock: "時計", vase: "花瓶", scissors: "はさみ",
+  "teddy bear": "ぬいぐるみ", "hair drier": "ドライヤー", toothbrush: "歯ブラシ" };
+const sc = document.createElement("canvas"), sctx = sc.getContext("2d", { willReadFrequently: true });
+let seg = null, segLast = 0, coco = null, objBusy = false, objLast = 0, objDet = null;
+
+// ---- 物体認識(coco-ssd: 80種類の身近なものを見分ける) ----
+async function loadCoco() {
+  try {
+    if (typeof cocoSsd === "undefined") throw new Error("script");
+    toast("物体認識を準備中…");
+    coco = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+    toast("物体認識の準備ができました");
+  } catch (e) { console.warn(e); toast("物体認識は読み込めませんでした(輪郭だけで動きます)"); }
+}
+function objectTick(now) {   // 照準の位置にあるものを、約0.6秒ごとに調べる
+  if (!coco || objBusy || now - objLast < OBJ_MS || !$("panel").hidden || video.readyState < 2 || !video.videoWidth) return;
+  objBusy = true; objLast = now;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  coco.detect(video, 10, OBJ_SCORE).then(preds => {
+    const cx = vw / 2, cy = vh / 2; let best = null, ba = 1e18;
+    for (const p of preds) {   // 照準を含むもののうち、いちばん小さいものを選ぶ(テーブルの上のコップなら、テーブルでなくコップ)
+      const [x, y, bw, bh] = p.bbox, px = bw * .04, py = bh * .04;
+      if (cx >= x - px && cx <= x + bw + px && cy >= y - py && cy <= y + bh + py && bw * bh < ba) { best = p; ba = bw * bh; }
+    }
+    objDet = best ? { cls: best.class, score: best.score, bbox: best.bbox, t: performance.now() } : { cls: null, t: performance.now() };
+  }).catch(e => console.warn(e)).finally(() => { objBusy = false; });
+}
+
+// ---- 輪郭: 物体の枠のすぐ外の色を「背景」として、背景と違う部分を物体として取る ----
+function morph(m, w, h, grow) {
+  const o = new Uint8Array(m.length);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    const s = m[i - w - 1] + m[i - w] + m[i - w + 1] + m[i - 1] + m[i] + m[i + 1] + m[i + w - 1] + m[i + w] + m[i + w + 1];
+    o[i] = grow ? (s > 0 ? 1 : 0) : (s === 9 ? 1 : 0);
+  }
+  return o;
+}
+
+function grow4(m, w, h) {
+  const o = m.slice();
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; if (!m[i]) continue;
+    if (x > 0) o[i - 1] = 1; if (x < w - 1) o[i + 1] = 1; if (y > 0) o[i - w] = 1; if (y < h - 1) o[i + w] = 1;
+  }
+  return o;
+}
+
+function segmentStep(now) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || video.readyState < 2) return;
+  const w = SEG_W, h = Math.round(SEG_W * vh / vw), n = w * h, k = w / vw;
+  if (!seg || seg.w !== w || seg.h !== h) { sc.width = w; sc.height = h; seg = { w, h, acc: new Float32Array(n), edges: [], label: null, score: 0 }; }
+  const cx = w >> 1, cy = h >> 1;
+  const faces = current.map(c => { const b = c.box; return [(b.x - b.width * FACE_PAD) * k, (b.y - b.height * FACE_PAD) * k, (b.x + b.width * (1 + FACE_PAD)) * k, (b.y + b.height * (1 + FACE_PAD)) * k]; });
+  const inFace = (x, y) => { for (const f of faces) if (x >= f[0] && x <= f[2] && y >= f[1] && y <= f[3]) return true; return false; };
+  const det = objDet && now - objDet.t < 1500 ? objDet : null;
+  if ((det && det.cls === "person") || inFace(cx, cy)) {   // 人は対象外: 輪郭も名前も出さない
+    seg.acc.fill(0); seg.edges = []; seg.label = null; seg.score = 0; return;
+  }
+  seg.label = det && det.cls ? (JA[det.cls] || det.cls) : null; seg.score = det && det.cls ? det.score : 0;
+
+  const m = new Uint8Array(n), stack = new Int32Array(n);
+  grab: {
+    sctx.drawImage(video, 0, 0, w, h);
+    const d = sctx.getImageData(0, 0, w, h).data, B = new Uint16Array(n);
+    for (let i = 0; i < n; i++) {
+      const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2], y = .299 * r + .587 * g + .114 * b, u = (b - y) * .564, v = (r - y) * .713;
+      const yb = Math.min(10, (y / 24) | 0), ub = Math.max(0, Math.min(15, ((u + 128) / 16) | 0)), vb = Math.max(0, Math.min(15, ((v + 128) / 16) | 0));
+      B[i] = (yb * 16 + ub) * 16 + vb;
+    }
+    // 調べる範囲: 物体認識の枠。なければ中央のまわり
+    let x0, y0, x1, y1;
+    if (det && det.cls) { const [bx, by, bw, bh] = det.bbox, ex = bw * .03, ey = bh * .03; x0 = (bx - ex) * k; y0 = (by - ey) * k; x1 = (bx + bw + ex) * k; y1 = (by + bh + ey) * k; }
+    else { const half = .22 * Math.min(w, h); x0 = cx - half; x1 = cx + half; y0 = cy - half; y1 = cy + half; }
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(w - 1, Math.ceil(x1)); y1 = Math.min(h - 1, Math.ceil(y1));
+    if (x1 - x0 < 6 || y1 - y0 < 6) break grab;
+    // 範囲のすぐ外側の色を集めて「背景の色」にする
+    const mg = Math.max(5, Math.round(.1 * Math.max(x1 - x0, y1 - y0)));
+    const rx0 = Math.max(0, x0 - mg), ry0 = Math.max(0, y0 - mg), rx1 = Math.min(w - 1, x1 + mg), ry1 = Math.min(h - 1, y1 + mg);
+    const hist = new Int32Array(11 * 256); let ringN = 0;
+    for (let y = ry0; y <= ry1; y++) for (let x = rx0; x <= rx1; x++) {
+      if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
+      if (inFace(x, y)) continue;
+      hist[B[y * w + x]]++; ringN++;
+    }
+    if (ringN < 40) break grab;
+    const thr = Math.max(3, ringN * BG_RATIO), isBg = new Uint8Array(11 * 256);
+    for (let yb = 0; yb < 11; yb++) for (let ub = 0; ub < 16; ub++) for (let vb = 0; vb < 16; vb++) {
+      let sum = 0;   // となりの色(明るさ・色味が少し違うもの)も背景とみなす
+      for (let a = -1; a <= 1; a++) for (let b2 = -1; b2 <= 1; b2++) for (let c2 = -1; c2 <= 1; c2++) {
+        const yy = yb + a, uu = ub + b2, vv = vb + c2;
+        if (yy >= 0 && yy < 11 && uu >= 0 && uu < 16 && vv >= 0 && vv < 16) sum += hist[(yy * 16 + uu) * 16 + vv];
+      }
+      isBg[(yb * 16 + ub) * 16 + vb] = sum >= thr ? 1 : 0;
+    }
+    // 背景と違う色の部分 = 物体
+    let F = new Uint8Array(n);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const i = y * w + x; if (!isBg[B[i]] && !inFace(x, y)) F[i] = 1; }
+    F = morph(morph(F, w, h, false), w, h, true);   // 細かいノイズを消す
+    F = morph(morph(F, w, h, true), w, h, false);   // 小さな隙間(文字など)をつなぐ
+    // つながったかたまりごとに分けて、物体のかたまりを1つ選ぶ
+    const lab = new Int32Array(n), areas = [0]; let L = 0;
+    for (let s0 = 0; s0 < n; s0++) {
+      if (!F[s0] || lab[s0]) continue;
+      L++; let sp = 0, a = 0; lab[s0] = L; stack[sp++] = s0;
+      while (sp) {
+        const i = stack[--sp], x = i % w; a++;
+        if (x > 0 && F[i - 1] && !lab[i - 1]) { lab[i - 1] = L; stack[sp++] = i - 1; }
+        if (x < w - 1 && F[i + 1] && !lab[i + 1]) { lab[i + 1] = L; stack[sp++] = i + 1; }
+        if (i >= w && F[i - w] && !lab[i - w]) { lab[i - w] = L; stack[sp++] = i - w; }
+        if (i < n - w && F[i + w] && !lab[i + w]) { lab[i + w] = L; stack[sp++] = i + w; }
+      }
+      areas[L] = a;
+    }
+    if (!L) break grab;
+    let c = 0;
+    if (det && det.cls) { for (let q = 1; q <= L; q++) if (!c || areas[q] > areas[c]) c = q; }   // 物体の枠の中で、いちばん大きいかたまり
+    else {                                                                                       // 認識できないときは、照準にいちばん近いかたまり
+      c = lab[cy * w + cx];
+      if (!c) { let bd = 1e9; for (let dy = -10; dy <= 10; dy++) for (let dx = -10; dx <= 10; dx++) { const i = (cy + dy) * w + cx + dx, q = lab[i], dd = dx * dx + dy * dy; if (q && dd < bd) { bd = dd; c = q; } } }
+    }
+    if (!c || areas[c] < .02 * (x1 - x0) * (y1 - y0)) break grab;
+    for (let i = 0; i < n; i++) if (lab[i] === c) m[i] = 1;
+  }
+
+  // 数フレームぶんなめらかにして、ちらつきを抑える
+  const mk = new Uint8Array(n); let cnt = 0;
+  for (let i = 0; i < n; i++) { seg.acc[i] = seg.acc[i] * .6 + m[i] * .4; if (seg.acc[i] > .5) { mk[i] = 1; cnt++; } }
+  seg.edges = [];
+  if (!cnt) return;
+  if (OUTLINE_GROW > 0) { let g = mk; for (let t = 0; t < OUTLINE_GROW; t++) g = grow4(g, w, h); mk.set(g); }   // 少し外側へふくらませる
+  // 外側から広げて「外」を決める(中の穴は輪郭に数えない)
+  const out = new Uint8Array(n); let sp = 0;
+  const pushOut = j => { if (!mk[j] && !out[j]) { out[j] = 1; stack[sp++] = j; } };
+  for (let x = 0; x < w; x++) { pushOut(x); pushOut((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { pushOut(y * w); pushOut(y * w + w - 1); }
+  while (sp) {
+    const i = stack[--sp], x = i % w, y = (i / w) | 0;
+    if (x > 0) pushOut(i - 1); if (x < w - 1) pushOut(i + 1); if (y > 0) pushOut(i - w); if (y < h - 1) pushOut(i + w);
+  }
+  const e = seg.edges;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; if (!mk[i]) continue;
+    if (y > 0 && out[i - w]) e.push(x, y, x + 1, y);
+    if (y < h - 1 && out[i + w]) e.push(x, y + 1, x + 1, y + 1);
+    if (x > 0 && out[i - 1]) e.push(x, y, x, y + 1);
+    if (x < w - 1 && out[i + 1]) e.push(x + 1, y, x + 1, y + 1);
+  }
+}
+
+function drawAim(cw, ch, s, ox, oy) {
+  const cx = cw / 2, cy = ch / 2;
+  ctx.shadowColor = "#7dffb0"; ctx.shadowBlur = 8;
+  if (seg && seg.edges.length) {   // 輪郭
+    const e = seg.edges, f = video.videoWidth / seg.w * s;
+    ctx.strokeStyle = "#d9ffe8"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.beginPath();
+    for (let i = 0; i < e.length; i += 4) {
+      let x1 = e[i] * f + ox, y1 = e[i + 1] * f + oy, x2 = e[i + 2] * f + ox, y2 = e[i + 3] * f + oy;
+      if (facing === "user") { x1 = cw - x1; x2 = cw - x2; }   // 内カメラは鏡像にそろえる
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = ctx.fillStyle = "#7dffb0"; ctx.lineWidth = 1.8;   // 照準(十字と円)
+  ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+  ctx.moveTo(cx - 24, cy); ctx.lineTo(cx - 8, cy); ctx.moveTo(cx + 8, cy); ctx.lineTo(cx + 24, cy);
+  ctx.moveTo(cx, cy - 24); ctx.lineTo(cx, cy - 8); ctx.moveTo(cx, cy + 8); ctx.lineTo(cx, cy + 24);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, Math.PI * 2); ctx.fill();
+  if (seg && seg.label) {   // 認識した名前
+    const t = seg.label + "  " + Math.round(seg.score * 100) + "%";
+    ctx.shadowBlur = 0; ctx.font = "15px sans-serif";
+    const tw = ctx.measureText(t).width, bx = cx - tw / 2 - 8, by = cy + 34;
+    ctx.fillStyle = "rgba(3,20,12,.78)"; ctx.fillRect(bx, by, tw + 16, 26);
+    ctx.strokeStyle = "#7dffb0"; ctx.lineWidth = 1.2; ctx.strokeRect(bx, by, tw + 16, 26);
+    ctx.fillStyle = "#7dffb0"; ctx.fillText(t, bx + 8, by + 18);
+  }
+}
+
+// ---- 描画 ----
+function draw() {
+  const cw = cv.clientWidth, ch = cv.clientHeight;
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  const vw = video.videoWidth, vh = video.videoHeight;
+  ctx.clearRect(0, 0, cw, ch);
+  if (!vw || !vh) return;
+  const s = Math.max(cw / vw, ch / vh), ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  ctx.shadowBlur = 8; ctx.font = "14px sans-serif";
+  for (const c of current) {
+    const b = c.box, w = b.width * s, h = b.height * s, y = b.y * s + oy, k = Math.min(w, h) * 0.22;
+    let x = b.x * s + ox; if (facing === "user") x = cw - x - w;   // 内カメラは鏡像にそろえる
+    c.rect = { x, y, w, h };   // タップ判定に使う
+    const sel = c.key === selectedKey, col = sel ? "#ff4040" : "#7dffb0";   // 選んだ枠は赤
+    ctx.strokeStyle = ctx.fillStyle = ctx.shadowColor = col; ctx.lineWidth = sel ? 3.5 : 2;
+    ctx.beginPath();
+    [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, dx, dy]) => {
+      ctx.moveTo(px + dx * k, py); ctx.lineTo(px, py); ctx.lineTo(px, py + dy * k);
+    });
+    ctx.stroke();
+    ctx.fillText((sel ? "▶ " : "") + (c.person ? c.person.name : "未登録") + (c.near ? "  d=" + c.d.toFixed(2) : ""), x, Math.max(14, y - 6));
+  }
+  drawAim(cw, ch, s, ox, oy);
+}
+
+function renderList() {   // 戦闘力は画面の決まった位置に表示(大きい顔から最大3人)
+  const ordered = selectedKey ? [...current].sort((a, b) => (b.key === selectedKey) - (a.key === selectedKey)) : current;
+  const items = ordered.slice(0, 3);   // 選んだ顔を先頭に、最大3人
+  const sig = items.map(c => c.key + "|" + (c.person ? c.person.name : "")).join(";");
+  if (sig !== lastSig) {   // 顔の顔ぶれや名前が変わったときだけ作り直す(タップを邪魔しないため)
+    listEl.innerHTML = items.map(c =>
+      `<div class="row" data-id="${c.person ? c.person.id : ""}"><span>${c.person ? esc(c.person.name) : "未登録"}</span><b></b></div>`).join("");
+    lastSig = sig;
+  }
+  items.forEach((c, i) => {
+    const row = listEl.children[i]; if (!row) return;
+    row.className = "row" + (c.key === selectedKey ? " sel" : "");
+    row.lastChild.textContent = c.shown.toLocaleString();
+  });
+}
+
+function renderInfo() {   // 選んだ顔の情報をざっと表示(メモの先頭を載せる)
+  const c = selectedKey && current.find(x => x.key === selectedKey);
+  if (!c) { infoEl.hidden = true; infoSig = ""; return; }
+  const p = c.person, memo = (p && p.memo || "").trim(), sig = c.key + "|" + (p ? p.name : "") + "|" + memo;
+  if (sig !== infoSig) {
+    infoSig = sig;
+    const body = memo ? esc(memo.length > 140 ? memo.slice(0, 140) + "…" : memo) : (p ? "メモはまだありません" : "未登録です。登録すると名前とメモを残せます");
+    infoEl.innerHTML = `<div class="ihead"><span class="iname">${p ? esc(p.name) : "未登録"}</span><b class="ipw"></b></div><div class="imemo${memo ? "" : " none"}">${body}</div>`;
+  }
+  infoEl.querySelector(".ipw").textContent = c.shown.toLocaleString();
+  infoEl.hidden = false;
+}
+
+function uiTick() {   // 数字がなめらかに上がるよう、検出とは別に毎フレーム更新する
+  const now = performance.now();
+  for (const c of current) updateAnim(c, now);
+  if (selectedKey) { if (current.some(c => c.key === selectedKey)) selSeen = now; else if (now - selSeen > 3000) selectedKey = null; }   // 3秒映らなければ選択解除
+  if (now - lastTick > 110 && current.slice(0, 3).some(c => c.counting)) { beep(1320, 0.05); lastTick = now; }   // 変化している間はピピピ
+  objectTick(now);
+  if (now - segLast > 90 && $("panel").hidden) { segLast = now; try { segmentStep(now); } catch (e) { console.warn(e); } }   // 輪郭は約0.1秒ごとに更新
+  draw(); renderList(); renderInfo();
+  requestAnimationFrame(uiTick);
+}
+
+// ---- 検出 ----
+async function step() {
+  const t0 = performance.now();
+  const res = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+    .withFaceLandmarks().withFaceDescriptors();
+  current = res.map(r => {
+    const m = identify(r.descriptor), p = m.p;
+    let key, seed, uk = null;
+    if (p) { key = "p" + p.id; seed = seedOf(p); }
+    else { uk = unknownFor(r.descriptor); key = "u" + uk.id; seed = uk.seed; }
+    return { box: r.detection.box, desc: r.descriptor, person: p, key, seed, power: power(seed), shown: P_MIN, d: m.d, near: m.near };
+  }).sort((a, b) => b.box.width - a.box.width);
+  $("count").textContent = "検出: " + current.length + "人";
+  $("fps").textContent = Math.round(1000 / (performance.now() - t0)) + " fps";
+  lastCount = current.length;
+}
+
+async function loop(id) {   // エラーが出ても止まらない。切替のときは古いループが確実に終わる
+  if (!running || id !== loopId) return;
+  busy = true;
+  try { if (video.readyState >= 2 && video.videoWidth) await step(); } catch (e) { console.warn(e); }
+  busy = false;
+  requestAnimationFrame(() => loop(id));
+}
+function startLoop() { running = true; lastCount = 0; loop(++loopId); }
+async function stopLoop() {
+  running = false; loopId++;
+  while (busy) await sleep(30);   // 処理中の1回が終わるまで待つ
+  current = []; lastSig = ""; listEl.innerHTML = ""; ctx.clearRect(0, 0, cv.width, cv.height);
+  objDet = null; if (seg) { seg.acc.fill(0); seg.edges = []; seg.label = null; }   // カメラ切替のとき、前の物体を引きずらない
+  $("count").textContent = "検出: 0人";
+}
+
+// ---- 登録一覧 ----
+function renderPanel() {
+  $("pcount").textContent = db.people.length;
+  $("plist").innerHTML = db.people.length
+    ? db.people.map(p => { const pw = personPower(p); return `<li data-id="${p.id}"><div class="top">
+        <span class="name">${esc(p.name)}</span><b class="pw">${pw.toLocaleString()}</b>
+        <button class="small" data-act="rename">名前変更</button>
+        <button class="small danger" data-act="del">削除</button></div>
+        <textarea class="memo" maxlength="500" placeholder="メモ" aria-label="${esc(p.name)}のメモ">${esc(p.memo || "")}</textarea></li>`; }).join("")
+    : `<li class="empty">まだ登録がありません。顔を映して「この顔を登録」を押してください</li>`;
+}
+function openPanel() { renderPanel(); $("panel").hidden = false; }
+function closePanel() { save(); $("panel").hidden = true; }
+
+function renamePerson(p) {
+  const n = prompt("名前を入力してください", p.name);
+  if (n && n.trim()) { p.name = n.trim().slice(0, 20); save(); lastSig = ""; renderPanel(); }
+}
+
+// ---- ボタン ----
+$("go").onclick = async () => {
+  try {
+    msg.textContent = "準備中です…(初回は少し時間がかかります)";
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await Promise.all([faceapi.nets.tinyFaceDetector, faceapi.nets.faceLandmark68Net, faceapi.nets.faceRecognitionNet].map(n => n.loadFromUri(MODEL_URL)));
+    await openCamera();
+    $("start").hidden = true; startLoop();
+    if (!uiStarted) { uiStarted = true; uiTick(); }
+    loadCoco();   // 物体認識は、あとから裏で読み込む(失敗しても他は動く)
+  } catch (e) { msg.textContent = "起動できませんでした。カメラの許可を確認してください。(" + e.message + ")"; }
+};
+
+$("flip").onclick = async () => {
+  if (switching) return;
+  switching = true;
+  const prev = facing;
+  await stopLoop();                 // ① 検出をいったん止める
+  facing = facing === "environment" ? "user" : "environment";
+  try {
+    await openCamera();             // ② カメラを開き直し、最初の1コマを待つ
+  } catch (e) {
+    toast("切り替えできませんでした: " + e.message);
+    facing = prev;
+    try { await openCamera(); } catch (e2) { toast("カメラを開けません: " + e2.message); }
+  }
+  startLoop();                      // ③ 検出を最初から再開
+  switching = false;
+};
+
+let registering = false;
+$("reg").onclick = async () => {
+  if (registering) return;
+  const u = current.find(c => c.key === selectedKey) || current.find(c => !c.person) || current[0];   // 選んだ顔 → 未登録の顔 → 一番大きい顔 の順
+  if (!u) return toast("顔が見つかりません。顔を映してから押してください");
+  if (u.person && !confirm("この顔は「" + u.person.name + "」として認識されています。別人として新しく登録しますか?")) return;
+  registering = true;
+  toast("登録中…少し顔の向きを変えながら映してください");
+  const base = u.desc, samples = [Array.from(base)];
+  for (let i = 0; i < SAMPLES; i++) {   // 数回に分けて撮り、角度や表情の違いも覚えさせる
+    await sleep(350);
+    let best = null, bd = 9;
+    for (const c of current) { const d = faceapi.euclideanDistance(base, c.desc); if (d < bd) { bd = d; best = c; } }
+    if (best && bd < 0.6 && !samples.some(x => faceapi.euclideanDistance(x, best.desc) < 0.02)) samples.push(Array.from(best.desc));
+  }
+  const id = db.next++;
+  const person = { id, name: "名無し" + String(id).padStart(3, "0"), desc: samples[0], descs: samples };
+  if (!u.person) person.seed = u.seed;   // 登録前に出ていた戦闘力をそのまま引き継ぐ
+  db.people.push(person);
+  if (selectedKey === u.key) selectedKey = "p" + id;   // 登録しても選択は保つ
+  save(); beep(880, 0.15); toast("登録しました(サンプル" + samples.length + "枚)。「登録一覧」から名前を変更できます");
+  registering = false;
+};
+
+$("show").onclick = openPanel;
+$("pclose").onclick = closePanel;
+
+$("plist").onclick = e => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  const id = +btn.closest("li").dataset.id, p = db.people.find(x => x.id === id);
+  if (!p) return;
+  if (btn.dataset.act === "rename") renamePerson(p);
+  if (btn.dataset.act === "del" && confirm("「" + p.name + "」を削除します。よろしいですか?")) {
+    db.people = db.people.filter(x => x.id !== id); save(); lastSig = ""; renderPanel(); toast("削除しました");
+  }
+};
+
+$("wipe").onclick = () => {
+  if (confirm("登録した顔データをすべて削除します。よろしいですか?")) { db = { next: 1, people: [] }; save(); lastSig = ""; renderPanel(); toast("削除しました"); }
+};
+
+listEl.onclick = e => {   // 画面の戦闘力の行をタップ → 名前変更
+  const id = +(e.target.closest(".row")?.dataset.id || 0), p = db.people.find(x => x.id === id);
+  if (p) renamePerson(p);
+};
+
+// ---- メモ(登録一覧の中で書き込む。入力するたびにこの端末へ保存) ----
+let memoTimer = 0;
+$("plist").addEventListener("input", e => {
+  if (!e.target.classList.contains("memo")) return;
+  const p = db.people.find(x => x.id === +e.target.closest("li").dataset.id); if (!p) return;
+  p.memo = e.target.value.slice(0, 500);
+  clearTimeout(memoTimer); memoTimer = setTimeout(save, 400);
+});
+$("plist").addEventListener("focusout", e => { if (e.target.classList.contains("memo")) save(); });
+addEventListener("pagehide", save);
+
+// ---- 顔の枠の内側をタップして選ぶ(もう一度タップ、または枠の外をタップで解除) ----
+cv.addEventListener("click", e => {
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  let hit = null;
+  for (const c of current) {
+    const q = c.rect; if (!q) continue;
+    if (px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h && (!hit || q.w * q.h < hit.rect.w * hit.rect.h)) hit = c;   // 重なっていたら小さい方
+  }
+  if (hit && hit.key !== selectedKey) { selectedKey = hit.key; selSeen = performance.now(); beep(1100, 0.06); toast("「" + (hit.person ? hit.person.name : "未登録") + "」を選びました"); }
+  else { selectedKey = null; }
+});
+</script>
+</body>
+</html>
