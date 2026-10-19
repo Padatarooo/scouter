@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>リアルタイム翻訳 聞く</title>
+<style>
+  :root{ --en:#e9fff1; --ja:#7dffb0; --dim:#8fb9a0; --fs:26px; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:#000; color:var(--en); font-family:"Hiragino Sans","Noto Sans JP",sans-serif; }
+  #app{ height:100dvh; display:flex; flex-direction:column;
+        padding:calc(env(safe-area-inset-top,0px) + 10px) 14px calc(env(safe-area-inset-bottom,0px) + 10px); }
+  #status{ flex:none; font-size:14px; color:var(--dim); min-height:1.6em; }
+  #status.warn{ color:#ffd27d; }
+  #status.live::before{ content:"● "; color:#ff5a5a; }
+
+  /* 字幕: 黒い背景に明るい文字(ARグラスでは黒が透けて見える) */
+  #log{ flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; justify-content:flex-end; padding:8px 0; }
+  .pair{ margin-top:.9em; opacity:.5; }
+  .pair:last-child{ opacity:1; }
+  .en{ font-size:calc(var(--fs) * .78); line-height:1.4; color:var(--en); overflow-wrap:anywhere; }
+  .ja{ font-size:var(--fs); line-height:1.4; color:var(--ja); margin-top:.15em; font-weight:600; overflow-wrap:anywhere; }
+  .ja.err{ color:#ffd27d; font-size:calc(var(--fs) * .6); font-weight:400; }
+  #log:not(.show-en) .en{ display:none; }
+  #log:not(.show-ja) .ja{ display:none; }
+  .hint{ color:var(--dim); font-size:16px; line-height:1.7; }
+  #interim{ flex:none; min-height:1.5em; font-size:calc(var(--fs) * .7); font-style:italic; color:var(--dim); overflow-wrap:anywhere; }
+
+  /* 操作 */
+  #panel{ flex:none; display:flex; flex-direction:column; gap:8px; padding-top:8px; }
+  .row{ display:flex; gap:8px; flex-wrap:wrap; }
+  button, input{ font:inherit; font-size:16px; border-radius:8px; }
+  button{ color:var(--ja); background:#06180f; border:1.5px solid var(--ja); padding:10px 14px; }
+  button:active{ background:#1b5c3b; }
+  button:focus-visible, input:focus-visible{ outline:3px solid #fff; outline-offset:2px; }
+  button.on{ background:#14452c; }
+  button.big{ flex:1; font-size:19px; padding:14px; }
+  button.rec{ color:#ff9a8a; border-color:#ff9a8a; }
+  input{ flex:1; min-width:0; color:var(--en); background:#06180f; border:1.5px solid #2f9e62; padding:10px 12px; }
+  #show{ position:fixed; right:12px; bottom:calc(env(safe-area-inset-bottom,0px) + 12px); padding:8px 12px; opacity:.75; }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="status" role="status">待機中</div>
+  <div id="log" aria-live="polite"></div>
+  <div id="interim"></div>
+  <div id="panel">
+    <div class="row">
+      <button id="mic" class="big">マイクを開始</button>
+      <button id="clear">消す</button>
+      <button id="hide">操作を隠す</button>
+    </div>
+    <div class="row">
+      <button id="tEn">英語 ON</button>
+      <button id="tJa">日本語 ON</button>
+      <button id="tTts">読み上げ OFF</button>
+      <button id="fsDown" aria-label="文字を小さく">A−</button>
+      <button id="fsUp" aria-label="文字を大きく">A＋</button>
+    </div>
+    <div class="row">
+      <input id="txt" type="text" placeholder="テスト用: 英語を入力して翻訳" enterkeyhint="send" autocapitalize="off" autocomplete="off">
+      <button id="send">翻訳</button>
+    </div>
+  </div>
+</div>
+<button id="show" hidden>操作</button>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- 設定(ここを書き換えれば調整できます) ----
+const MYMEMORY_EMAIL = "";     // 自分のメールアドレスを入れると、翻訳の無料枠が1日5,000文字 → 50,000文字に増える
+const MAX_LINES = 6;           // 画面に残す文の数
+const PAUSE_MS = 1500;         // 話が止まってから、この時間たったら区切って翻訳する
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+let settings = { en: true, ja: true, tts: false, fs: 26 };
+try { Object.assign(settings, JSON.parse(localStorage.getItem("listen.settings") || "{}")); } catch (e) {}
+const saveSettings = () => { try { localStorage.setItem("listen.settings", JSON.stringify(settings)); } catch (e) {} };
+
+// ---- 翻訳(MyMemory: 登録なしで使える無料のサービス。あとで別のものに差しかえられるよう、ここ1か所にまとめています) ----
+const cache = new Map();
+const decode = s => { const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+function chunk(text, max = 400) {   // 1回に送れる長さに限りがあるので、文の区切りで分ける
+  const parts = text.match(/[^.!?]+[.!?]*\s*/g) || [text], out = [];
+  let cur = "";
+  for (const p of parts) { if (cur && (cur + p).length > max) { out.push(cur.trim()); cur = p; } else cur += p; }
+  if (cur.trim()) out.push(cur.trim());
+  return out.flatMap(c => c.length > max ? c.match(new RegExp(".{1," + max + "}", "g")) : [c]);
+}
+async function translateOne(q) {
+  if (cache.has(q)) return cache.get(q);
+  const params = new URLSearchParams({ q, langpair: "en|ja" });
+  if (MYMEMORY_EMAIL) params.set("de", MYMEMORY_EMAIL);
+  const r = await fetch("https://api.mymemory.translated.net/get?" + params);
+  const j = await r.json();
+  if (String(j.responseStatus) !== "200") throw new Error(j.responseDetails || ("status " + j.responseStatus));
+  const ja = decode(j.responseData.translatedText || "");
+  if (/MYMEMORY WARNING/i.test(ja)) throw new Error("quota");
+  cache.set(q, ja);
+  return ja;
+}
+async function translate(text) {
+  let out = "";
+  for (const c of chunk(text)) out += await translateOne(c);
+  return out;
+}
+function errMsg(e) {
+  const m = String(e && e.message || e);
+  if (/quota|ALL AVAILABLE|429/i.test(m)) return "今日の無料の翻訳の上限に達しました";
+  if (e && e.name === "TypeError") return "ネットワークにつながっていません";
+  return "翻訳できませんでした";
+}
+
+// ---- 画面 ----
+let lines = [];
+function setStatus(t, warn, live) { const s = $("status"); s.textContent = t; s.className = (warn ? "warn " : "") + (live ? "live" : ""); }
+function setInterim(t) { $("interim").textContent = t ? t + " …" : ""; }
+function syncButtons() {
+  $("tEn").textContent = "英語 " + (settings.en ? "ON" : "OFF"); $("tEn").classList.toggle("on", settings.en);
+  $("tJa").textContent = "日本語 " + (settings.ja ? "ON" : "OFF"); $("tJa").classList.toggle("on", settings.ja);
+  $("tTts").textContent = "読み上げ " + (settings.tts ? "ON" : "OFF"); $("tTts").classList.toggle("on", settings.tts);
+  document.documentElement.style.setProperty("--fs", settings.fs + "px");
+}
+function render() {
+  const log = $("log");
+  log.className = (settings.en ? "show-en " : "") + (settings.ja ? "show-ja" : "");
+  if (!lines.length) { log.innerHTML = '<div class="hint">「マイクを開始」を押して、英語を聞かせてください。<br>英語と日本語が、ここに出ます。<br>※ホーム画面に追加したアプリでは音声認識が使えません。Safariで開いてください。</div>'; return; }
+  log.innerHTML = lines.slice(-MAX_LINES).map(l =>
+    `<div class="pair"><div class="en">${esc(l.en)}</div><div class="ja${l.err ? " err" : ""}">${l.err ? esc(l.err) : l.ja == null ? "…" : esc(l.ja)}</div></div>`).join("");
+}
+
+// ---- 日本語の読み上げ(iPhoneに入っている読み上げ機能) ----
+function speakJa(text) {
+  if (!settings.tts || !("speechSynthesis" in window) || !text) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = "ja-JP"; speechSynthesis.speak(u);
+}
+
+// ---- 1文ぶんを追加して、翻訳する ----
+let lastNorm = "", lastAt = 0;
+function addLine(en) {
+  const line = { en, ja: null, err: null };
+  lines.push(line); if (lines.length > MAX_LINES * 3) lines.shift();
+  render();
+  translate(en).then(ja => { line.ja = ja; render(); speakJa(ja); }).catch(e => { console.warn(e); line.err = errMsg(e); render(); });
+}
+function commit(t) {   // 同じ内容が2回届いても、1回だけ出す
+  t = t.replace(/\s+/g, " ").trim(); if (!t) return;
+  const now = Date.now(), norm = t.toLowerCase();
+  if (lastNorm && now - lastAt < 5000) {
+    if (norm === lastNorm || lastNorm.startsWith(norm)) return;
+    if (norm.startsWith(lastNorm)) t = t.slice(lastNorm.length).trim();   // 同じ文の続きだけを足す
+  }
+  if (!t) return;
+  lastNorm = norm; lastAt = now;
+  addLine(t);
+}
+
+// ---- 音声認識(英語を聞き取る) ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, interimText = "", pauseTimer = 0, restartTimer = 0, wakeLock = null;
+
+function ensureRec() {
+  if (rec) return rec;
+  rec = new SR();
+  rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.continuous = !IS_IOS;   // iPhoneは「1回ずつ区切って、自動で聞き直す」ほうが安定する
+  rec.onstart = () => { interimText = ""; setInterim(""); };
+  rec.onresult = e => {
+    if (settings.tts && "speechSynthesis" in window && speechSynthesis.speaking) return;   // 読み上げの声を、英語として拾わない
+    let part = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i], t = r[0].transcript.trim();
+      if (r.isFinal) commit(t); else part += (part ? " " : "") + t;
+    }
+    interimText = part; setInterim(part);
+    clearTimeout(pauseTimer);
+    if (part) pauseTimer = setTimeout(flushInterim, PAUSE_MS);
+  };
+  rec.onerror = e => {
+    const c = e.error;
+    if (c === "no-speech" || c === "aborted") return;
+    if (c === "not-allowed") stopListening("マイクが許可されていません。設定でSafariのマイクを許可してください。", true);
+    else if (c === "service-not-allowed") stopListening("音声認識が許可されていません。設定の「一般」→「キーボード」で「音声入力」をオンにしてください。", true);
+    else if (c === "audio-capture") stopListening("マイクが見つかりません。", true);
+    else if (c === "network") stopListening("ネットワークにつながっていないため、音声認識が使えません。", true);
+    else console.warn("recognition error", c);
+  };
+  rec.onend = () => {
+    clearTimeout(pauseTimer);
+    if (interimText) { commit(interimText); interimText = ""; setInterim(""); }   // 終わる前に残っていた分も出す
+    if (listening) { clearTimeout(restartTimer); restartTimer = setTimeout(startRec, 150); }
+  };
+  return rec;
+}
+function startRec() {
+  if (!listening) return;
+  try { ensureRec().start(); setStatus("聞いています(英語)", false, true); } catch (e) { /* すでに開始している場合は何もしない */ }
+}
+function flushInterim() {   // 話が止まったまま確定しないとき、ここで区切る
+  if (!interimText) return;
+  commit(interimText); interimText = ""; setInterim("");
+  try { rec.stop(); } catch (e) {}   // 終わると自動で聞き直す
+}
+async function keepAwake(on) {   // 聞いている間は、画面が暗くならないようにする
+  try {
+    if (on && navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
+    else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) {}
+}
+function startListening() {
+  if (!SR) return setStatus("このブラウザは音声認識に対応していません。iPhoneのSafariで開いてください。(テスト用の入力欄は使えます)", true);
+  listening = true;
+  $("mic").textContent = "マイクを止める"; $("mic").classList.add("rec");
+  keepAwake(true); startRec();
+}
+function stopListening(message, warn) {
+  listening = false; clearTimeout(restartTimer); clearTimeout(pauseTimer);
+  if (rec) { try { rec.stop(); } catch (e) {} }
+  if (interimText) { commit(interimText); interimText = ""; }
+  setInterim("");
+  $("mic").textContent = "マイクを開始"; $("mic").classList.remove("rec");
+  keepAwake(false);
+  setStatus(message || "停止中", !!warn);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && listening) { keepAwake(true); startRec(); } });
+
+// ---- ボタン ----
+$("mic").onclick = () => listening ? stopListening() : startListening();
+$("clear").onclick = () => { lines = []; lastNorm = ""; render(); };
+$("tEn").onclick = () => { settings.en = !settings.en; if (!settings.en && !settings.ja) settings.ja = true; saveSettings(); syncButtons(); render(); };
+$("tJa").onclick = () => { settings.ja = !settings.ja; if (!settings.en && !settings.ja) settings.en = true; saveSettings(); syncButtons(); render(); };
+$("tTts").onclick = () => {
+  settings.tts = !settings.tts; saveSettings(); syncButtons();
+  if (settings.tts && "speechSynthesis" in window) speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance("読み上げをオンにしました"), { lang: "ja-JP" }));   // iPhoneでは、ボタンを押したときに一度声を出しておく必要がある
+  else if ("speechSynthesis" in window) speechSynthesis.cancel();
+};
+$("fsDown").onclick = () => { settings.fs = Math.max(16, settings.fs - 4); saveSettings(); syncButtons(); };
+$("fsUp").onclick = () => { settings.fs = Math.min(48, settings.fs + 4); saveSettings(); syncButtons(); };
+$("hide").onclick = () => { $("panel").hidden = true; $("show").hidden = false; };
+$("show").onclick = () => { $("panel").hidden = false; $("show").hidden = true; };
+function sendText() { const v = $("txt").value.trim(); if (!v) return; $("txt").value = ""; addLine(v); }
+$("send").onclick = sendText;
+$("txt").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendText(); } });
+
+syncButtons(); render();
+if (!SR) setStatus("このブラウザは音声認識に対応していません。iPhoneのSafariで開いてください。(テスト用の入力欄は使えます)", true);
+</script>
+</body>
+</html>
