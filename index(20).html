@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>リアルタイム翻訳</title>
+<style>
+  :root{ --en:#e9fff1; --ja:#7dffb0; --dim:#8fb9a0; --fs:26px; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:#000; color:var(--en); font-family:"Hiragino Sans","Noto Sans JP",sans-serif; }
+  /* 画面全体(#stage): 字幕とボタンの層。ここだけを回す(背景のカメラ #cam は回さない)。大きさと向きは、JSが画面に合わせて決める。--sat/sar/sab/sal は、切り欠きなどの余白(回したときは向きに合わせて入れかわる) */
+  #stage{ position:fixed; z-index:1; left:0; top:0; width:100%; height:100%; overflow:hidden; transform-origin:0 0;
+          --sat:0px; --sar:0px; --sab:0px; --sal:0px; }
+  #cam{ position:fixed; z-index:0; left:0; top:0; width:100%; height:100%; object-fit:cover; background:#000; }   /* カメラは、いつも画面いっぱい。回さない */
+  #app{ position:absolute; inset:0; z-index:2; display:flex; flex-direction:column;
+        padding:calc(var(--sat) + 10px) calc(var(--sar) + 14px) calc(var(--sab) + 10px) calc(var(--sal) + 14px); }
+  #probe{ position:fixed; left:0; top:0; visibility:hidden; pointer-events:none;
+          padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px); }
+  #top{ flex:none; display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:2.4em; }
+  #settingsBtn{ flex:none; padding:7px 10px; line-height:0; }
+  #settingsBtn svg{ width:22px; height:22px; fill:currentColor; display:block; }
+  #status{ flex:1; min-width:0; font-size:14px; color:var(--dim); min-height:1.6em; }
+  #status.warn{ color:#ffd27d; }
+  #status.live::before{ content:"● "; color:#ff5a5a; }
+
+  /* 字幕: 下地は敷かず、文字だけ(ふちに影をつけて読みやすくする)。聞こえた言葉は小さく、翻訳は大きく */
+  #log{ flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; justify-content:flex-end; padding:8px 0; }
+  .pair{ margin-top:.8em; opacity:.6; }
+  .pair:last-child{ opacity:1; }
+  .en{ color:var(--en); }
+  .ja{ color:var(--ja); }
+  .src{ font-size:calc(var(--fs) * .78); line-height:1.4; overflow-wrap:anywhere; }
+  .dst{ font-size:var(--fs); line-height:1.4; margin-top:.15em; font-weight:600; overflow-wrap:anywhere; }
+  .dst.err{ color:#ffd27d; font-size:calc(var(--fs) * .6); font-weight:400; }
+  #log:not(.show-en) .en{ display:none; }
+  #log:not(.show-ja) .ja{ display:none; }
+  .hint{ color:#e4f7ec; font-size:15px; line-height:1.7; }
+  #log, #interim, #status{ text-shadow:0 0 3px #000, 0 1px 4px rgba(0,0,0,.9); }
+  #interim{ flex:none; min-height:1.5em; font-size:calc(var(--fs) * .7); font-style:italic; color:var(--dim); overflow-wrap:anywhere; }
+
+  /* 操作 */
+  #panel{ flex:none; display:flex; flex-direction:column; gap:8px; padding-top:8px; }
+  .row{ display:flex; gap:8px; flex-wrap:wrap; }
+  button, input{ font:inherit; font-size:16px; border-radius:8px; }
+  button{ color:var(--ja); background:#06180f; border:1.5px solid var(--ja); padding:10px 14px; }
+  button:active{ background:#1b5c3b; }
+  button:focus-visible, input:focus-visible{ outline:3px solid #fff; outline-offset:2px; }
+  button.on{ background:#14452c; }
+  button.mode{ flex:1; line-height:1.3; padding:10px 8px; }
+  button.mode small{ display:block; font-size:12px; color:var(--dim); }
+  button.mode.on{ border-width:2.5px; background:#1b5c3b; color:#fff; }
+  button.mode.on small{ color:#cfeedd; }
+  button.mode.rec{ border-color:#ff7a6a; }   /* 聞いている(マイクがオン)ほうのボタン */
+  input{ flex:1; min-width:0; color:var(--en); background:#06180f; border:1.5px solid #2f9e62; padding:10px 12px; }
+  #show{ position:absolute; z-index:5; right:calc(var(--sar) + 12px); bottom:calc(var(--sab) + 12px); padding:8px 12px; opacity:.85; }
+  button.half{ flex:1; }
+  .row.ends{ justify-content:space-between; }   /* 左端と右端に寄せる */
+  button.mini{ font-size:13px; padding:6px 10px; }   /* 小さめのボタン */
+
+  /* 設定シート: 下から「ひゅん」と出てきて、中のボタンが左右から「ひゅんひゅん」と飛んでくる */
+  #sheet{ position:absolute; inset:0; z-index:20; }
+  #backdrop{ position:absolute; inset:0; background:rgba(0,0,0,.4); opacity:0; transition:opacity .25s; }
+  #sheet.open #backdrop{ opacity:1; }
+  #sheetBody{ position:absolute; left:calc(var(--sal) + 10px); right:calc(var(--sar) + 10px); top:calc(var(--sat) + 58px);   /* 上から出る。位置は、開くときに歯車の真下へ合わせる */
+              transform-origin:top right; transform:translateY(-120%) scale(.9); opacity:0; }
+  #sheetBody.scroll{ overflow-y:auto; overflow-x:hidden; }   /* 背の低い画面で、はみ出すときだけ上下にスクロール */
+  #sheet.open #sheetBody{ animation:swoosh .5s cubic-bezier(.2,1.35,.4,1) forwards; }
+  #sheet.closing #sheetBody{ animation:away .22s ease-in forwards; }
+  .sheetPanel{ background:#06180f; border:1.5px solid var(--ja); border-radius:16px; padding:14px; }
+  .sheetFoot{ display:flex; justify-content:flex-end; margin-top:8px; }   /* 「閉じる」は枠の外、右下 */
+  .sheetFoot button{ padding:10px 22px; }
+  .sheetTitle{ font-size:15px; color:var(--dim); margin:0 0 10px 2px; letter-spacing:.1em; }
+  .sheetGrid{ display:grid; grid-template-columns:repeat(6,1fr); gap:8px; }   /* 6列: 上の3つは2列ずつ、A＋とA−は2列ぶんの幅で中央に並べる */
+  .sheetGrid button{ grid-column:span 2; padding:14px 4px; font-size:15px; line-height:1.25; }   /* せまい画面では、文字が2行に折り返す */
+  #fsUp{ grid-column:2 / span 2; }
+  #fsDown{ grid-column:4 / span 2; }
+  #rotBtn{ grid-column:3 / span 2; border-width:2px; background:#12402a; color:#eafff3; box-shadow:0 0 10px rgba(125,255,176,.4); }   /* 回転ボタンは、ほんの少しだけ強調 */
+  #sheet.open .sheetGrid button, #sheet.open .sheetFoot button{ animation:hyun .45s cubic-bezier(.2,1.5,.35,1) both; animation-delay:calc(var(--i) * 70ms + 120ms); }
+  @keyframes swoosh{
+    0%{ transform:translateY(-120%) scale(.9) skewX(8deg); opacity:0; }
+    60%{ transform:translateY(6px) scale(1.01) skewX(-2deg); opacity:1; }
+    100%{ transform:none; opacity:1; }
+  }
+  @keyframes away{ from{ transform:none; opacity:1; } to{ transform:translateY(-120%) scale(.9) skewX(8deg); opacity:0; } }
+  @keyframes hyun{
+    from{ opacity:0; transform:translateX(calc(var(--dir) * 80px)) scale(.6) skewX(calc(var(--dir) * -14deg)); }
+    to{ opacity:1; transform:none; }
+  }
+  @media (prefers-reduced-motion: reduce){   /* 動きが苦手な人向け: 動かさずに表示する */
+    #sheet.open #sheetBody, #sheet.closing #sheetBody, #sheet.open .sheetGrid button, #sheet.open .sheetFoot button{ animation:none; }
+    #sheetBody{ transform:none; opacity:1; }
+    #backdrop{ transition:none; }
+  }
+  /* 横長のとき(スマホを横にしたとき、または回転ボタンで横にしたとき)の並び */
+  #stage.wide #panel{ flex-direction:row; align-items:stretch; }
+  #stage.wide .row.ends{ flex-direction:column; justify-content:space-between; flex:none; flex-wrap:nowrap; }
+  #stage.wide .row.modes{ flex:1; flex-wrap:nowrap; }
+  #stage.wide .row.test{ display:none; }   /* 横長は高さがせまいので、テスト用の入力欄は隠す */
+  #stage.wide #sheetBody{ left:auto; width:min(520px, calc(100% - var(--sal) - var(--sar) - 20px)); }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div id="probe"></div>
+<video id="cam" playsinline muted autoplay></video>
+<div id="stage">
+<div id="app">
+  <div id="top">
+    <div id="status" role="status">待機中</div>
+    <button id="settingsBtn" aria-label="設定" aria-expanded="false" aria-controls="sheet">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+    </button>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <div id="interim"></div>
+  <div id="panel">
+    <div class="row ends">
+      <button id="hide" class="mini">操作を隠す</button>
+      <button id="clear" class="mini">文字リセット</button>
+    </div>
+    <div class="row modes">
+      <button id="mEn" class="mode">英語を聞く<small id="mEnSub">→ 日本語に翻訳</small></button>
+      <button id="mJa" class="mode">日本語を聞く<small id="mJaSub">→ 英語に翻訳</small></button>
+    </div>
+    <div class="row test">
+      <input id="txt" type="text" enterkeyhint="send" autocapitalize="off" autocomplete="off">
+      <button id="send">翻訳</button>
+    </div>
+  </div>
+</div>
+<button id="show" hidden>操作</button>
+
+<div id="sheet" hidden role="dialog" aria-label="設定">
+  <div id="backdrop"></div>
+  <div id="sheetBody">
+    <div class="sheetPanel">
+    <div class="sheetTitle">設定</div>
+    <div class="sheetGrid">
+      <button id="tJa" style="--i:0; --dir:-1">日本語 ON</button>
+      <button id="tEn" style="--i:1; --dir:1">英語 ON</button>
+      <button id="tTts" style="--i:2; --dir:-1">読み上げ OFF</button>
+      <button id="fsUp" style="--i:3; --dir:1" aria-label="文字を大きく">A＋</button>
+      <button id="fsDown" style="--i:4; --dir:-1" aria-label="文字を小さく">A−</button>
+      <button id="rotBtn" style="--i:5; --dir:1" aria-label="画面の向きを切り替える" aria-pressed="false">回転</button>
+    </div>
+    </div>
+    <div class="sheetFoot"><button id="sheetClose" style="--i:6; --dir:1">閉じる</button></div>
+  </div>
+</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- 設定(ここを書き換えれば調整できます) ----
+const CAM_FIT = "cover";       // カメラの映像の収め方。"cover" = 画面いっぱい(はしが少し切れる) / "contain" = 全体を収める(黒い帯が出る)
+const MYMEMORY_EMAIL = "";     // 自分のメールアドレスを入れると、翻訳の無料枠が1日5,000文字 → 50,000文字に増える
+const MAX_LINES = 6;           // 画面に残す文の数
+const PAUSE_MS = 1500;         // 話が止まってから、この時間たったら区切って翻訳する
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+// 聞く言語ごとの設定。en = 英語を聞いて日本語にする / ja = 日本語を聞いて英語にする
+const MODES = {
+  en: { lang: "en-US", pair: "en|ja", speak: "ja-JP", src: "en", dst: "ja", label: "英語", label_to: "日本語", test: "テスト用: 英語を入力して翻訳" },
+  ja: { lang: "ja-JP", pair: "ja|en", speak: "en-US", src: "ja", dst: "en", label: "日本語", label_to: "英語", test: "テスト用: 日本語を入力して翻訳" }
+};
+
+let settings = { en: true, ja: true, tts: false, fs: 26, mode: "en", rot: 0 };
+try { Object.assign(settings, JSON.parse(localStorage.getItem("listen.settings") || "{}")); } catch (e) {}
+if (!MODES[settings.mode]) settings.mode = "en";
+if (![0, 90].includes(settings.rot)) settings.rot = 0;   // 向きは、0度と90度だけ
+const saveSettings = () => { try { localStorage.setItem("listen.settings", JSON.stringify(settings)); } catch (e) {} };
+
+// ---- 翻訳(MyMemory: 登録なしで使える無料のサービス。あとで別のものに差しかえられるよう、ここにまとめています) ----
+const cache = new Map();
+const decode = s => { const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+const byteLen = s => new TextEncoder().encode(s).length;
+function chunk(text, maxBytes = 450) {   // 1回に送れる長さ(バイト)に限りがあるので、文の区切りで分ける。日本語は1文字が3バイト
+  const parts = text.match(/[^.!?。！？]+[.!?。！？]*\s*/g) || [text], out = [];
+  let cur = "";
+  for (const p of parts) { if (cur && byteLen(cur + p) > maxBytes) { out.push(cur.trim()); cur = p; } else cur += p; }
+  if (cur.trim()) out.push(cur.trim());
+  const res = [];
+  for (const c of out) {
+    if (byteLen(c) <= maxBytes) { res.push(c); continue; }
+    let buf = "";   // 1文が長すぎるときは、文字ずつ数えて強制的に分ける
+    for (const ch of c) { if (byteLen(buf + ch) > maxBytes) { res.push(buf); buf = ch; } else buf += ch; }
+    if (buf) res.push(buf);
+  }
+  return res;
+}
+async function translateOne(q, pair) {
+  const key = pair + "|" + q;
+  if (cache.has(key)) return cache.get(key);
+  const params = new URLSearchParams({ q, langpair: pair });
+  if (MYMEMORY_EMAIL) params.set("de", MYMEMORY_EMAIL);
+  const r = await fetch("https://api.mymemory.translated.net/get?" + params);
+  const j = await r.json();
+  if (String(j.responseStatus) !== "200") throw new Error(j.responseDetails || ("status " + j.responseStatus));
+  const out = decode(j.responseData.translatedText || "");
+  if (/MYMEMORY WARNING/i.test(out)) throw new Error("quota");
+  cache.set(key, out);
+  return out;
+}
+async function translate(text, mode) {
+  const m = MODES[mode], parts = [];
+  for (const c of chunk(text)) parts.push(await translateOne(c, m.pair));
+  return parts.join(m.dst === "en" ? " " : "");   // 英語はスペースでつなぐ
+}
+function errMsg(e) {
+  const m = String(e && e.message || e);
+  if (/quota|ALL AVAILABLE|429/i.test(m)) return "今日の無料の翻訳の上限に達しました";
+  if (e && e.name === "TypeError") return "ネットワークにつながっていません";
+  return "翻訳できませんでした";
+}
+
+// ---- 画面 ----
+let lines = [];
+function setStatus(t, warn, live) { const s = $("status"); s.textContent = t; s.className = (warn ? "warn " : "") + (live ? "live" : ""); }
+function setInterim(t) { $("interim").textContent = t ? t + " …" : ""; }
+function syncButtons() {
+  $("tEn").textContent = "英語 " + (settings.en ? "ON" : "OFF"); $("tEn").classList.toggle("on", settings.en);
+  $("tJa").textContent = "日本語 " + (settings.ja ? "ON" : "OFF"); $("tJa").classList.toggle("on", settings.ja);
+  $("tTts").textContent = "読み上げ " + (settings.tts ? "ON" : "OFF"); $("tTts").classList.toggle("on", settings.tts);
+  for (const [m, btn, sub] of [["en", "mEn", "mEnSub"], ["ja", "mJa", "mJaSub"]]) {   // 聞いているほうのボタンだけを明るく・赤くする
+    const active = listening && settings.mode === m;
+    $(btn).classList.toggle("on", active); $(btn).classList.toggle("rec", active);
+    $(sub).textContent = active ? "● 聞いています" : "→ " + MODES[m].label_to + "に翻訳";
+  }
+  $("rotBtn").setAttribute("aria-pressed", settings.rot === 90 ? "true" : "false");
+  $("txt").placeholder = MODES[settings.mode].test;
+  document.documentElement.style.setProperty("--fs", settings.fs + "px");
+}
+function render() {
+  const log = $("log");
+  log.className = (settings.en ? "show-en " : "") + (settings.ja ? "show-ja" : "");
+  if (!lines.length) {
+    log.innerHTML = '<div class="hint">下のボタンを押すと、マイクがオンになります。もう一度同じボタンを押すと、オフになります。<br>・英語を聞く: 相手の英語を、日本語にします<br>・日本語を聞く: 自分の日本語を、英語にします<br>聞いている途中で、もう一方のボタンを押すと、聞く言葉が切り替わります。<br>※ホーム画面に追加したアプリでは音声認識が使えません。Safariで開いてください。</div>';
+    return;
+  }
+  log.innerHTML = lines.slice(-MAX_LINES).map(l => {
+    const m = MODES[l.mode];
+    const dst = l.err ? `<div class="dst err">${esc(l.err)}</div>` : `<div class="dst ${m.dst}">${l.dst == null ? "…" : esc(l.dst)}</div>`;
+    return `<div class="pair"><div class="src ${m.src}">${esc(l.src)}</div>${dst}</div>`;
+  }).join("");
+}
+
+// ---- 翻訳した言葉の読み上げ(iPhoneに入っている読み上げ機能) ----
+function speakText(text, lang) {
+  if (!settings.tts || !("speechSynthesis" in window) || !text) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = lang; speechSynthesis.speak(u);
+}
+
+// ---- 1文ぶんを追加して、翻訳する ----
+let lastNorm = "", lastAt = 0;
+function addLine(src, mode) {
+  const line = { src, dst: null, err: null, mode };
+  lines.push(line); if (lines.length > MAX_LINES * 3) lines.shift();
+  render();
+  translate(src, mode).then(dst => { line.dst = dst; render(); speakText(dst, MODES[mode].speak); })
+    .catch(e => { console.warn(e); line.err = errMsg(e); render(); });
+}
+function commit(t, mode) {   // 同じ内容が2回届いても、1回だけ出す
+  t = t.replace(/\s+/g, " ").trim(); if (!t) return;
+  const now = Date.now(), norm = mode + "|" + t.toLowerCase();
+  const prev = lastNorm.startsWith(mode + "|") ? lastNorm.slice(mode.length + 1) : "";
+  if (prev && now - lastAt < 5000) {
+    const cur = norm.slice(mode.length + 1);
+    if (cur === prev || prev.startsWith(cur)) return;
+    if (cur.startsWith(prev)) t = t.slice(prev.length).trim();   // 同じ文の続きだけを足す
+  }
+  if (!t) return;
+  lastNorm = norm; lastAt = now;
+  addLine(t, mode);
+}
+
+// ---- 音声認識(選んだ言語を聞き取る) ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, sessionMode = settings.mode, interimText = "", pauseTimer = 0, restartTimer = 0, wakeLock = null;
+
+function ensureRec() {
+  if (rec) return rec;
+  rec = new SR();
+  rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.continuous = !IS_IOS;   // iPhoneは「1回ずつ区切って、自動で聞き直す」ほうが安定する
+  rec.onstart = () => { interimText = ""; setInterim(""); };
+  rec.onresult = e => {
+    if (settings.tts && "speechSynthesis" in window && speechSynthesis.speaking) return;   // 読み上げの声を、聞き取りに使わない
+    let part = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i], t = r[0].transcript.trim();
+      if (r.isFinal) commit(t, sessionMode); else part += (part ? " " : "") + t;
+    }
+    interimText = part; setInterim(part);
+    clearTimeout(pauseTimer);
+    if (part) pauseTimer = setTimeout(flushInterim, PAUSE_MS);
+  };
+  rec.onerror = e => {
+    const c = e.error;
+    if (c === "no-speech" || c === "aborted") return;
+    if (c === "not-allowed") stopListening("マイクが許可されていません。設定でSafariのマイクを許可してください。", true);
+    else if (c === "service-not-allowed") stopListening("音声認識が許可されていません。設定の「一般」→「キーボード」で「音声入力」をオンにしてください。", true);
+    else if (c === "audio-capture") stopListening("マイクが見つかりません。", true);
+    else if (c === "network") stopListening("ネットワークにつながっていないため、音声認識が使えません。", true);
+    else if (c === "language-not-supported") stopListening("この言語の音声認識は、この端末で使えません。", true);
+    else console.warn("recognition error", c);
+  };
+  rec.onend = () => {
+    clearTimeout(pauseTimer);
+    if (interimText) { commit(interimText, sessionMode); interimText = ""; setInterim(""); }   // 終わる前に残っていた分も出す(切り替え前の言語として)
+    if (listening) { clearTimeout(restartTimer); restartTimer = setTimeout(startRec, 150); }
+  };
+  return rec;
+}
+function startRec() {
+  if (!listening) return;
+  const prev = sessionMode;
+  try {
+    const r = ensureRec();
+    sessionMode = settings.mode;
+    r.lang = MODES[sessionMode].lang;   // 始めるたびに、いま選んでいる言語にする
+    r.start();
+    setStatus("聞いています(" + MODES[sessionMode].label + ")", false, true);
+  } catch (e) { sessionMode = prev; /* すでに開始している場合は何もしない */ }
+}
+function flushInterim() {   // 話が止まったまま確定しないとき、ここで区切る
+  if (!interimText) return;
+  commit(interimText, sessionMode); interimText = ""; setInterim("");
+  try { rec.stop(); } catch (e) {}   // 終わると自動で聞き直す
+}
+async function keepAwake(on) {   // 聞いている間は、画面が暗くならないようにする
+  try {
+    if (on && navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
+    else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) {}
+}
+function startListening() {
+  if (!SR) return setStatus("このブラウザは音声認識に対応していません。iPhoneのSafariで開いてください。(テスト用の入力欄は使えます)", true);
+  listening = true;
+  syncButtons();
+  keepAwake(true); startRec();
+}
+function stopListening(message, warn) {
+  listening = false; clearTimeout(restartTimer); clearTimeout(pauseTimer);
+  if (rec) { try { rec.stop(); } catch (e) {} }
+  if (interimText) { commit(interimText, sessionMode); interimText = ""; }
+  setInterim("");
+  syncButtons();
+  keepAwake(false);
+  setStatus(message || "停止中", !!warn);
+}
+function onModeButton(m) {   // 言語のボタン: 止まっていれば聞き始める / 同じボタンをもう一度で止める / もう一方のボタンなら言語を切り替える
+  if (listening && settings.mode === m) { stopListening(); return; }
+  const changed = settings.mode !== m;
+  if (changed) { settings.mode = m; saveSettings(); }
+  if (listening) {   // いまの区切りで終わらせて、新しい言語で聞き直す
+    syncButtons();
+    if (rec) { clearTimeout(pauseTimer); try { rec.stop(); } catch (e) {} }
+  } else startListening();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && listening) { keepAwake(true); startRec(); } });
+
+// ---- 画面の向き(回転): 字幕とボタンだけを、0度と90度で切り替える(カメラの映像は回さない) ----
+function measureInsets() {   // 切り欠きなどの余白を測り、回しているときは向きに合わせて入れかえる
+  const cs = getComputedStyle($("probe")), px = v => parseFloat(v) || 0;
+  const d = { t: px(cs.paddingTop), r: px(cs.paddingRight), b: px(cs.paddingBottom), l: px(cs.paddingLeft) }, a = settings.rot;
+  const m = a === 0 ? [d.t, d.r, d.b, d.l] : a === 90 ? [d.r, d.b, d.l, d.t] : a === 180 ? [d.b, d.l, d.t, d.r] : [d.l, d.t, d.r, d.b];
+  const st = $("stage").style;
+  st.setProperty("--sat", m[0] + "px"); st.setProperty("--sar", m[1] + "px"); st.setProperty("--sab", m[2] + "px"); st.setProperty("--sal", m[3] + "px");
+}
+function layoutStage() {
+  const W = window.innerWidth, H = window.innerHeight, a = settings.rot, st = $("stage"), swap = a === 90 || a === 270;
+  st.style.width = (swap ? H : W) + "px"; st.style.height = (swap ? W : H) + "px";
+  st.style.transform = a === 0 ? "none" : a === 90 ? `translateX(${W}px) rotate(90deg)` : a === 180 ? `translate(${W}px,${H}px) rotate(180deg)` : `translateY(${H}px) rotate(270deg)`;
+  measureInsets();
+  st.classList.toggle("wide", st.clientWidth > st.clientHeight);   // 横長のときは、横長用の並びにする
+  if (!$("sheet").hidden) positionSheet();
+}
+addEventListener("resize", layoutStage);
+addEventListener("orientationchange", () => setTimeout(layoutStage, 200));
+
+// ---- カメラ(背景) ----
+let camStream = null;
+function camFail() { if (!listening) setStatus("カメラを使えません。背景は黒になります。(カメラの許可を確認してください)", true); }
+async function startCamera() {
+  const v = $("cam");
+  if (camStream && camStream.getTracks().some(t => t.readyState === "live")) { v.play().catch(() => {}); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return camFail();
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });   // 背面カメラ。16:9にして、画面いっぱいに広げたときの拡大を小さくする
+    v.style.objectFit = CAM_FIT;
+    v.srcObject = camStream; await v.play();
+  } catch (e) { console.warn(e); camStream = null; camFail(); }
+}
+document.addEventListener("pointerdown", () => { if (!camStream) startCamera(); });   // 最初に許可できなかったとき、画面を触ったらもう一度ためす
+document.addEventListener("visibilitychange", () => { if (!document.hidden) startCamera(); });
+
+// ---- 設定シート ----
+function positionSheet() {   // 設定の窓を、歯車のすぐ下に合わせる(画面を回していても、画面の中の座標で測る)
+  const g = $("settingsBtn"), b = $("sheetBody"), top = g.offsetTop + g.offsetHeight + 8;
+  b.classList.remove("scroll"); b.style.top = top + "px"; b.style.maxHeight = Math.max(120, $("stage").clientHeight - top - 10) + "px";
+  b.classList.toggle("scroll", b.scrollHeight > b.clientHeight + 1);
+}
+function openSheet() {
+  const s = $("sheet");
+  s.hidden = false; positionSheet();
+  s.classList.remove("closing"); void s.offsetWidth; s.classList.add("open");   // 動きを最初からやり直す
+  $("settingsBtn").setAttribute("aria-expanded", "true");
+}
+function closeSheet() {
+  const s = $("sheet"); if (s.hidden) return;
+  s.classList.add("closing"); s.classList.remove("open");
+  $("settingsBtn").setAttribute("aria-expanded", "false");
+  setTimeout(() => { if (s.classList.contains("closing")) { s.hidden = true; s.classList.remove("closing"); } }, 260);
+}
+$("settingsBtn").onclick = () => $("sheet").hidden || $("sheet").classList.contains("closing") ? openSheet() : closeSheet();
+$("sheetClose").onclick = closeSheet;
+$("backdrop").onclick = closeSheet;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
+
+// ---- ボタン ----
+$("mEn").onclick = () => onModeButton("en");
+$("mJa").onclick = () => onModeButton("ja");
+$("clear").onclick = () => { lines = []; lastNorm = ""; render(); };
+$("tEn").onclick = () => { settings.en = !settings.en; if (!settings.en && !settings.ja) settings.ja = true; saveSettings(); syncButtons(); render(); };
+$("tJa").onclick = () => { settings.ja = !settings.ja; if (!settings.en && !settings.ja) settings.en = true; saveSettings(); syncButtons(); render(); };
+$("tTts").onclick = () => {
+  settings.tts = !settings.tts; saveSettings(); syncButtons();
+  if (settings.tts && "speechSynthesis" in window) speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance("読み上げをオンにしました"), { lang: "ja-JP" }));   // iPhoneでは、ボタンを押したときに一度声を出しておく必要がある
+  else if ("speechSynthesis" in window) speechSynthesis.cancel();
+};
+$("rotBtn").onclick = () => { settings.rot = settings.rot === 0 ? 90 : 0; saveSettings(); syncButtons(); layoutStage(); };   // 押すたびに 0度 ⇔ 90度
+$("fsDown").onclick = () => { settings.fs = Math.max(16, settings.fs - 4); saveSettings(); syncButtons(); };
+$("fsUp").onclick = () => { settings.fs = Math.min(48, settings.fs + 4); saveSettings(); syncButtons(); };
+$("hide").onclick = () => { closeSheet(); $("panel").hidden = true; $("settingsBtn").hidden = true; $("show").hidden = false; };
+$("show").onclick = () => { $("panel").hidden = false; $("settingsBtn").hidden = false; $("show").hidden = true; };
+function sendText() { const v = $("txt").value.trim(); if (!v) return; $("txt").value = ""; addLine(v, settings.mode); }
+$("send").onclick = sendText;
+$("txt").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendText(); } });
+
+syncButtons(); render(); layoutStage(); startCamera();
+if (!SR) setStatus("このブラウザは音声認識に対応していません。iPhoneのSafariで開いてください。(テスト用の入力欄は使えます)", true);
+</script>
+</body>
+</html>
