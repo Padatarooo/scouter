@@ -242,7 +242,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 
 // ---- 設定(ここを書き換えれば調整できます) ----
 const CAM_FIT = "cover";       // カメラの映像の収め方。"cover" = 画面いっぱい(はしが少し切れる) / "contain" = 全体を収める(黒い帯が出る)
-const MYMEMORY_EMAIL = "";     // 自分のメールアドレスを入れると、翻訳の無料枠が1日5,000文字 → 50,000文字に増える
+const MYMEMORY_EMAIL = "jojo31503150@icloud.com";     // 自分のメールアドレスを入れると、翻訳の無料枠が1日5,000文字 → 50,000文字に増える
 const TMP_KEY_URL = "https://soniox-proxy.jojo31503150.workers.dev";        // Cloudflare Worker(鍵を預かる中継)のアドレス。入れると、Sonioxで日本語と英語を自動で聞き分けます。空のままなら、これまでのiPhone内蔵の音声認識(ボタンで言語を切り替え)を使います
 const STT_TERMS = [];          // よく出る名前・地名など(聞き取りの助けになる)。例: ["New York", "Times Square"]
 const SONIOX_IDLE_MS = 300000; // 音が何もない状態がこの時間続いたら、料金がかからないよう自動で止める(5分)
